@@ -738,6 +738,64 @@ def save_mark_review(source_image: str, item_key: str, students: dict, choice_wi
     set_review_notice("success", f"{item['title']} 修正已保存。")
 
 
+def confirm_part_review(source_image: str, item_key: str, students: dict) -> None:
+    """确认整 Part，在按钮回调中保存，再由本次局部刷新展示结果。"""
+    record = find_record(source_image)
+    item = next((candidate for candidate in st.session_state.issues.get(source_image, []) if candidate.get("key") == item_key), None)
+    if record is None or item is None or item.get("kind") != "part_empty":
+        set_review_notice("error", "未找到需要确认的 Part，请重新打开本卷。")
+        return
+    full_key = issue_key(source_image, item_key)
+    if full_key in st.session_state.resolved:
+        return
+    ensure_reviewer()
+    entry = append_audit(record, change_type="人工确认", target=item["title"],
+                         original_value="待确认", corrected_value="整Part为空")
+    apply_part_empty(record, st.session_state.item_rows, item,
+                     operator=st.session_state.reviewer, review_basis=st.session_state.review_basis,
+                     changed_at=entry["Changed At"])
+    confirmed_keys = {question["key"] for question in item["question_issues"]}
+    record["Reopened Review Questions"] = [key for key in record.get("Reopened Review Questions", []) if key not in confirmed_keys]
+    st.session_state.resolved.add(full_key)
+    st.session_state.stable_review_sources.add(source_image)
+    refresh_status(record, students)
+    st.session_state.exports = None
+    persist_current_session()
+    set_review_notice("success", f"{item['title']} 已全部记为空白并保存。")
+
+
+def expand_part_review(source_image: str, item_key: str, students: dict) -> None:
+    """展开待检查题目，避免在绘制到一半时强制中断并重跑整页。"""
+    record = find_record(source_image)
+    issues = st.session_state.issues.get(source_image, [])
+    item = next((candidate for candidate in issues if candidate.get("key") == item_key), None)
+    if record is None or item is None or item.get("kind") != "part_empty":
+        set_review_notice("error", "未找到需要展开的 Part，请重新打开本卷。")
+        return
+    record["Expanded Review Sections"] = sorted(set(record.get("Expanded Review Sections", [])) | {item["section"]})
+    if issue_key(source_image, item_key) in st.session_state.resolved:
+        question_keys = {question["key"] for question in item["question_issues"]}
+        record["Reopened Review Questions"] = sorted(set(record.get("Reopened Review Questions", [])) | question_keys)
+        for question_key in question_keys:
+            st.session_state.resolved.discard(issue_key(source_image, question_key))
+    pending_questions = pending_part_questions(record, item, st.session_state.item_rows, st.session_state.resolved)
+    item_index = issues.index(item)
+    st.session_state.issues[source_image] = issues[:item_index] + pending_questions + issues[item_index + 1:]
+    st.session_state.resolved.discard(issue_key(source_image, item_key))
+    if pending_questions:
+        message = f"{item['title']} 已展开 {len(pending_questions)} 道待检查题目，已在当前答题卡下方按题号显示。"
+        saved_count = len(item["question_issues"]) - len(pending_questions)
+        if saved_count:
+            message += f"其余 {saved_count} 道题已保存人工结果，无需重复确认。"
+    else:
+        st.session_state.stable_review_sources.add(source_image)
+        message = f"{item['title']} 的题目已全部确认，已保留保存结果并清除过期空白提示。"
+    st.session_state.part_expand_notices[source_image] = message
+    refresh_status(record, students)
+    st.session_state.exports = None
+    persist_current_session()
+
+
 
 initialize()
 render_display_controls()
@@ -797,6 +855,7 @@ else:
         st.warning("该目录不存在或无法访问。")
 
 # 同一图片目录的复核进度在 App 重启后自动恢复。
+recovery_notice = st.empty()
 resolved_folder = str(folder.resolve()) if folder and folder.is_dir() else ""
 if resolved_folder and st.session_state.loaded_session_folder != resolved_folder and not st.session_state.records:
     saved_session = load_review_session(folder)
@@ -817,17 +876,18 @@ if resolved_folder and st.session_state.loaded_session_folder != resolved_folder
                 if issues:
                     st.session_state.issues[record["Source Image"]] = issues
             refresh_status(record, students)
-        st.info(f"已恢复上次进度：{len(st.session_state.records)} 张答题卡，{len(st.session_state.audit_log)} 条人工复核记录。")
+        recovery_notice.info(f"已恢复上次进度：{len(st.session_state.records)} 张答题卡，{len(st.session_state.audit_log)} 条人工复核记录。")
 
 st.subheader("开始扫描")
 scan_button_label = "重新识别全部图片（清空当前复核进度）" if st.session_state.records else "开始识别"
+scan_progress = st.empty()
 if st.button(scan_button_label, type="primary", disabled=not images):
     reset_review_widgets()
     st.session_state.records, st.session_state.item_rows, st.session_state.issues, st.session_state.resolved, st.session_state.confirmed_warnings = [], [], {}, set(), set()
     st.session_state.audit_log = []
     st.session_state.part_expand_notices = {}
     st.session_state.stable_review_sources = set()
-    progress = st.progress(0, text="正在准备扫描…")
+    progress = scan_progress.progress(0, text="正在准备扫描…")
     for index, path in enumerate(images, 1):
         progress.progress(index / len(images), text=f"正在处理 {index} / {len(images)}：{path.name}")
         record, item_rows = scan_one(path, template, students)
@@ -930,134 +990,100 @@ def render_review_workspace(students: dict, template: dict) -> None:
                 f"{display_status} · {record['Source Image']}", expanded=True, key=panel_key,
                 on_change=remember_review_panel_state, args=(record["Source Image"],),
             ):
-                render_card_overview(record, template)
-                render_exam_identity_review(record, students)
-                st.markdown("#### 答题内容核对")
-                record_issues = st.session_state.issues.get(record["Source Image"], [])
-                unresolved_record_issues = [
-                    item for item in record_issues
-                    if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved
-                ]
-                if (
-                    record["Status"] in {"CHECK_MARK", "CHECK_PART_EMPTY"}
-                    or unresolved_record_issues
-                    or record["Source Image"] in st.session_state.stable_review_sources
-                ):
-                    issues = record_issues
-                    unresolved = [item for item in issues if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved]
-                    warning = record.get("Low Answer Warning")
-                    if warning and unresolved:
-                        instructions = (
-                            "请直接使用下方的“确认整 Part 为空”或“逐题检查”处理。"
-                            if any(item.get("kind") == "part_empty" for item in unresolved)
-                            else "请检查下方尚未确认的题目并保存结果。"
-                        )
-                        st.warning(
-                            f"疑似异常答题卡\n\n原因：{warning}\n\n"
-                            f"{instructions}"
-                        )
-                    part_expand_notice = st.session_state.part_expand_notices.pop(record["Source Image"], None)
-                    if part_expand_notice:
-                        st.info(part_expand_notice)
-                    if not unresolved and record["Source Image"] not in st.session_state.stable_review_sources:
-                        st.info("该项没有可定位的填涂框；请检查原始照片是否完整。")
-                    display_issues = issues if record["Source Image"] in st.session_state.stable_review_sources else unresolved
-                    for item in display_issues:
-                        item_is_resolved = issue_key(record["Source Image"], item["key"]) in st.session_state.resolved
-                        st.markdown("---")
-                        if item.get("kind") == "part_empty":
-                            st.write(f"Part：{item['title']}")
-                            st.write(f"题目范围：{item['question_range']}")
-                            st.write("复核结果：已确认整 Part 为空（已保存）" if item_is_resolved else f"检测结果：{item['detail']}")
-                            part_col_1, part_col_2 = st.columns(2)
-                            with part_col_1:
-                                if st.button("确认整Part为空", disabled=item_is_resolved, key=f"confirm_part_{record['Source Image']}_{item['section']}"):
-                                    ensure_reviewer()
-                                    entry = append_audit(
-                                        record, change_type="人工确认", target=item["title"],
-                                        original_value="待确认", corrected_value="整Part为空",
-                                    )
-                                    apply_part_empty(
-                                        record, st.session_state.item_rows, item,
-                                        operator=st.session_state.reviewer,
-                                        review_basis=st.session_state.review_basis,
-                                        changed_at=entry["Changed At"],
-                                    )
-                                    confirmed_keys = {question["key"] for question in item["question_issues"]}
-                                    record["Reopened Review Questions"] = [key for key in record.get("Reopened Review Questions", []) if key not in confirmed_keys]
-                                    st.session_state.resolved.add(issue_key(record["Source Image"], item["key"]))
-                                    st.session_state.stable_review_sources.add(record["Source Image"])
-                                    refresh_status(record, students)
-                                    st.session_state.exports = None
-                                    persist_current_session()
-                                    st.success("已将该 Part 全部记为空白。")
-                                    st.rerun()
-                            with part_col_2:
-                                if st.button("改为逐题检查" if item_is_resolved else "逐题检查", key=f"expand_part_{record['Source Image']}_{item['section']}"):
-                                    record["Expanded Review Sections"] = sorted(set(record.get("Expanded Review Sections", [])) | {item["section"]})
+                with st.container(key=f"review_overview_{record['Source Image']}"):
+                    render_card_overview(record, template)
+                with st.container(key=f"review_identity_{record['Source Image']}"):
+                    render_exam_identity_review(record, students)
+                with st.container(key=f"review_answers_{record['Source Image']}"):
+                    st.markdown("#### 答题内容核对")
+                    record_issues = st.session_state.issues.get(record["Source Image"], [])
+                    unresolved_record_issues = [
+                        item for item in record_issues
+                        if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved
+                    ]
+                    if (
+                        record["Status"] in {"CHECK_MARK", "CHECK_PART_EMPTY"}
+                        or unresolved_record_issues
+                        or record["Source Image"] in st.session_state.stable_review_sources
+                    ):
+                        issues = record_issues
+                        unresolved = [item for item in issues if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved]
+                        warning_slot = st.empty()
+                        part_notice_slot = st.empty()
+                        missing_items_slot = st.empty()
+                        warning = record.get("Low Answer Warning")
+                        if warning and unresolved:
+                            instructions = (
+                                "请直接使用下方的“确认整 Part 为空”或“逐题检查”处理。"
+                                if any(item.get("kind") == "part_empty" for item in unresolved)
+                                else "请检查下方尚未确认的题目并保存结果。"
+                            )
+                            warning_slot.warning(
+                                f"疑似异常答题卡\n\n原因：{warning}\n\n"
+                                f"{instructions}"
+                            )
+                        part_expand_notice = st.session_state.part_expand_notices.pop(record["Source Image"], None)
+                        if part_expand_notice:
+                            part_notice_slot.info(part_expand_notice)
+                        if not unresolved and record["Source Image"] not in st.session_state.stable_review_sources:
+                            missing_items_slot.info("该项没有可定位的填涂框；请检查原始照片是否完整。")
+                        display_issues = issues if record["Source Image"] in st.session_state.stable_review_sources else unresolved
+                        for item in display_issues:
+                            # 单题整套内容在同一替换槽内更新，避免提示改变时控件错位。
+                            item_slot = st.empty()
+                            with item_slot.container(key=f"review_item_{record['Source Image']}_{item['key']}"):
+                                item_is_resolved = issue_key(record["Source Image"], item["key"]) in st.session_state.resolved
+                                st.markdown("---")
+                                if item.get("kind") == "part_empty":
+                                    st.write(f"Part：{item['title']}")
+                                    st.write(f"题目范围：{item['question_range']}")
+                                    st.write("复核结果：已确认整 Part 为空（已保存）" if item_is_resolved else f"检测结果：{item['detail']}")
+                                    part_col_1, part_col_2 = st.columns(2)
+                                    with part_col_1:
+                                        st.button("确认整Part为空", disabled=item_is_resolved,
+                                                  key=f"confirm_part_{record['Source Image']}_{item['section']}",
+                                                  on_click=confirm_part_review, args=(record["Source Image"], item["key"], students))
+                                    with part_col_2:
+                                        st.button("改为逐题检查" if item_is_resolved else "逐题检查",
+                                                  key=f"expand_part_{record['Source Image']}_{item['section']}",
+                                                  on_click=expand_part_review, args=(record["Source Image"], item["key"], students))
                                     if item_is_resolved:
-                                        question_keys = {question["key"] for question in item["question_issues"]}
-                                        record["Reopened Review Questions"] = sorted(set(record.get("Reopened Review Questions", [])) | question_keys)
-                                        for question_key in question_keys:
-                                            st.session_state.resolved.discard(issue_key(record["Source Image"], question_key))
-                                    pending_questions = pending_part_questions(
-                                        record, item, st.session_state.item_rows, st.session_state.resolved,
-                                    )
-                                    item_index = issues.index(item)
-                                    st.session_state.issues[record["Source Image"]] = (
-                                        issues[:item_index] + pending_questions + issues[item_index + 1:]
-                                    )
-                                    st.session_state.resolved.discard(issue_key(record["Source Image"], item["key"]))
-                                    if pending_questions:
-                                        message = f"{item['title']} 已展开 {len(pending_questions)} 道待检查题目，已在当前答题卡下方按题号显示。"
-                                        saved_count = len(item["question_issues"]) - len(pending_questions)
-                                        if saved_count:
-                                            message += f"其余 {saved_count} 道题已保存人工结果，无需重复确认。"
-                                    else:
-                                        st.session_state.stable_review_sources.add(record["Source Image"])
-                                        message = f"{item['title']} 的题目已全部确认，已保留保存结果并清除过期空白提示。"
-                                    st.session_state.part_expand_notices[record["Source Image"]] = message
-                                    refresh_status(record, students)
-                                    st.session_state.exports = None
-                                    persist_current_session()
-                                    st.rerun()
-                            if item_is_resolved:
-                                st.success("该 Part 已确认并保存。")
-                            continue
-                        st.write(f"题号或得分区域：{item['title']}")
-                        st.write(f"{'原始识别（已复核）' if item_is_resolved else '当前识别'}：{item['detail'].replace('当前识别结果：', '')}")
-                        if item["crop"] is not None:
-                            st.image(item["crop"], caption="当前题目局部图", width=500)
-                        if item["key"] == "image":
-                            continue
-                        choices = (["空白"] if item.get("allow_blank", True) else []) + item["choices"]
-                        current_choice = current_mark_choice(record, item)
-                        if not current_choice or current_choice not in choices:
-                            current_choice = choices[0]
-                        choice_index = choices.index(current_choice) if current_choice in choices else 0
-                        # Use the same widget identity before and after saving.
-                        choice_widget_key = f"choice_{record['Source Image']}_{item['key']}"
-                        st.caption(f"✅ 已保存结果：{current_choice}" if item_is_resolved else "复核结果：尚未保存")
-                        with st.container(key=f"review_anchor_{record['Source Image']}_{item['key']}"):
-                            with st.form(
-                                key=f"review_form_{record['Source Image']}_{item['key']}",
-                                border=False,
-                            ):
-                                st.radio(
-                                    "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
-                                    choices,
-                                    horizontal=True,
-                                    index=choice_index,
-                                    key=choice_widget_key,
-                                )
-                                st.form_submit_button(
-                                    "修改并重新保存" if item_is_resolved else "保存该项修正",
-                                    key=f"save_mark_{record['Source Image']}_{item['key']}",
-                                    on_click=save_mark_review,
-                                    args=(record["Source Image"], item["key"], students, choice_widget_key),
-                                )
-                else:
-                    st.caption("暂无需要人工复核的答题内容项目。")
+                                        st.success("该 Part 已确认并保存。")
+                                    continue
+                                st.write(f"题号或得分区域：{item['title']}")
+                                st.write(f"{'原始识别（已复核）' if item_is_resolved else '当前识别'}：{item['detail'].replace('当前识别结果：', '')}")
+                                if item["crop"] is not None:
+                                    st.image(item["crop"], caption="当前题目局部图", width=500)
+                                if item["key"] == "image":
+                                    continue
+                                choices = (["空白"] if item.get("allow_blank", True) else []) + item["choices"]
+                                current_choice = current_mark_choice(record, item)
+                                if not current_choice or current_choice not in choices:
+                                    current_choice = choices[0]
+                                choice_index = choices.index(current_choice) if current_choice in choices else 0
+                                # Use the same widget identity before and after saving.
+                                choice_widget_key = f"choice_{record['Source Image']}_{item['key']}"
+                                st.caption(f"✅ 已保存结果：{current_choice}" if item_is_resolved else "复核结果：尚未保存")
+                                with st.container(key=f"review_anchor_{record['Source Image']}_{item['key']}"):
+                                    with st.form(
+                                        key=f"review_form_{record['Source Image']}_{item['key']}",
+                                        border=False,
+                                    ):
+                                        st.radio(
+                                            "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
+                                            choices,
+                                            horizontal=True,
+                                            index=choice_index,
+                                            key=choice_widget_key,
+                                        )
+                                        st.form_submit_button(
+                                            "修改并重新保存" if item_is_resolved else "保存该项修正",
+                                            key=f"save_mark_{record['Source Image']}_{item['key']}",
+                                            on_click=save_mark_review,
+                                            args=(record["Source Image"], item["key"], students, choice_widget_key),
+                                        )
+                    else:
+                        st.caption("暂无需要人工复核的答题内容项目。")
                 if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
                     st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
                     st.button(
