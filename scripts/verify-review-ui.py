@@ -19,14 +19,16 @@ reset = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and
 state = {'choice_first.png_q1': 'A', 'saved_choice_first.png_q1': 'B', 'save_mark_first.png_q1': False,
          'id_first.png': 'S10086', 'confirm_id_first.png': False, 'supplement_name_first.png': '甲',
          'identity_notices': {'first.png': ('error', '旧提示'), 'other.png': ('success', '已保存')},
+         'closed_review_sources': {'first.png'}, 'review_panel_example': False,
          'choice_other.png_q1': 'C', 'reviewer': '测试复核人'}
 namespace = {'st': SimpleNamespace(session_state=state)}
 exec(compile(ast.Module(body=[reset], type_ignores=[]), '<review-reset-helper>', 'exec'), namespace)
 namespace['reset_review_widgets']('first.png')
 assert state == {'choice_other.png_q1': 'C', 'reviewer': '测试复核人',
+                 'closed_review_sources': {'first.png'}, 'review_panel_example': False,
                  'identity_notices': {'other.png': ('success', '已保存')}}
 namespace['reset_review_widgets']()
-assert state == {'reviewer': '测试复核人', 'identity_notices': {}}
+assert state == {'reviewer': '测试复核人', 'identity_notices': {}, 'closed_review_sources': set()}
 print('Fresh-recognition widget reset verified.', flush=True)
 
 with tempfile.TemporaryDirectory(prefix='joy-review-browser-') as temp:
@@ -72,6 +74,7 @@ if 'synthetic_ready' not in st.session_state:
               'Branch': '测试分校', 'Class': '测试班级', 'Exam Session': '测试场次',
               'Scan Result Status': '测试识别结果', 'Status': 'CHECK_ID' if identity_review else 'CHECK_MARK',
               'Identity Issue': '考号识别异常' if identity_review else '',
+              'Total': 0,
               **{column: 0 for column in PART_SCORE_COLUMNS}}
     items = [{'Source Image': image, 'Exam ID': exam_id, 'Section': 'listening_part1',
               'Question': str(n), 'Marked Answer': '', 'Is Correct': 'N', 'Answer Status': 'BLANK'} for n in range(1, 9)]
@@ -82,12 +85,15 @@ if 'synthetic_ready' not in st.session_state:
         items, issues = [], []
     st.session_state.update(synthetic_ready=True, view='scan', records=[record], item_rows=items,
         issues={image: issues}, folder=str(PHOTOS), loaded_session_folder=str(PHOTOS), reviewer='测试复核人')
-    if scenario == 'navigation':
+    if scenario in {'navigation', 'folded-navigation'}:
         from shutil import copy2
         import copy
         records, item_rows, all_issues, stable = [], [], {}, set()
-        for source_image, status in [('先前已完成.png', 'OK'), ('未复核 01（考号待确认）.png', 'CHECK_ID'),
-                                     ('已完成 02.png', 'OK'), ('未复核 03（答题待确认）.png', 'CHECK_MARK')]:
+        fixture_cards = [('先前已完成.png', 'OK'), ('未复核 01（考号待确认）.png', 'CHECK_ID'),
+                         ('已完成 02.png', 'OK'), ('未复核 03（答题待确认）.png', 'CHECK_MARK')]
+        if scenario == 'folded-navigation':
+            fixture_cards = [(f'待复核 {number:02d}.png', 'CHECK_MARK') for number in range(1, 6)]
+        for source_image, status in fixture_cards:
             copy2(PHOTOS / image, PHOTOS / source_image)
             card = copy.deepcopy(record)
             card.update({'Source Image': source_image, 'Source Path': str(PHOTOS / source_image),
@@ -123,6 +129,7 @@ st.caption(f"Full app runs: {st.session_state.synthetic_full_runs}")
             runs = [('marks', zoom) for zoom in sys.argv[1:] or ['75', '100', '110']]
             runs.extend((scenario, '100') for scenario in ('known-s', 'known-numeric', 'missing', 'id-only'))
             runs.extend(('navigation', zoom) for zoom in sys.argv[1:] or ['75', '100', '110'])
+            runs.extend(('folded-navigation', zoom) for zoom in sys.argv[1:] or ['75', '100', '110'])
             selected = set(filter(None, os.environ.get('JOY_TEST_SCENARIOS', '').split(',')))
             if selected:
                 runs = [(scenario, zoom) for scenario, zoom in runs if scenario in selected]
@@ -134,6 +141,19 @@ st.caption(f"Full app runs: {st.session_state.synthetic_full_runs}")
                 sessions = list((data / 'sessions').glob('*.json'))
                 assert len(sessions) == 1
                 saved = json.loads(sessions[0].read_text())
+                if scenario == 'folded-navigation':
+                    assert len(saved['records']) == 5
+                    assert [record['Status'] for record in saved['records']] == ['CHECK_MARK'] * 3 + ['OK'] * 2
+                    assert len(saved['audit_log']) == 16 and len(saved['resolved']) == 16
+                    assert len(saved['item_rows']) == 40
+                    for row in saved['item_rows']:
+                        if row['Source Image'] in {'待复核 04.png', '待复核 05.png'}:
+                            assert row['Marked Answer'] == 'A'
+                        else:
+                            assert row['Marked Answer'] == ''
+                    assert all(entry['Operator'] == '测试复核人' for entry in saved['audit_log'])
+                    print('Folded cards remained pending; 16 saved answers and audit entries preserved.', flush=True)
+                    continue
                 if scenario == 'navigation':
                     assert len(saved['records']) == 4 and all(row['Status'] == 'OK' for row in saved['records'])
                     assert len(saved['audit_log']) == 17 and len(saved['resolved']) == 16

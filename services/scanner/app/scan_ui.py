@@ -24,7 +24,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.constants import CONFIG_DIR, ensure_runtime_config
 from app.review_scroll import install_review_scroll_lock
-from app.review_navigation import EXPORT_TARGET_KEY, first_pending_review_key, review_card_key
+from app.review_navigation import (EXPORT_TARGET_KEY, PENDING_REVIEW_STATUSES,
+                                   first_pending_review_key, review_card_key, review_panel_key)
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, save_roster_snapshot
 from app.review_store import (audit_entry, delete_review_session,
@@ -64,6 +65,7 @@ def initialize() -> None:
         "stable_review_sources": set(), "ui_zoom": 100,
         "pending_image_rescan": None,
         "review_navigation": None,
+        "closed_review_sources": set(),
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -73,11 +75,12 @@ def reset_review_widgets(source_image: str | None = None) -> None:
     """Fresh recognition must not inherit widget values from an older review."""
     if source_image is None:
         st.session_state.pop("review_navigation", None)
+        st.session_state["closed_review_sources"] = set()
     prefixes = ("choice_", "saved_choice_", "save_mark_", "id_", "confirm_id_", "confirm_supplement_",
                 "supplement_name_", "supplement_grade_", "supplement_branch_", "supplement_class_", "supplement_session_")
     for key in list(st.session_state):
         if source_image is None:
-            matches = any(key.startswith(prefix) for prefix in prefixes)
+            matches = any(key.startswith(prefix) for prefix in prefixes) or key.startswith("review_panel_")
         else:
             matches = any(key == f"{prefix}{source_image}" or key.startswith(f"{prefix}{source_image}_") for prefix in prefixes)
         if matches:
@@ -459,14 +462,21 @@ def find_record(source_image: str) -> dict | None:
     return next((record for record in st.session_state.records if record["Source Image"] == source_image), None)
 
 
+def remember_review_panel_state(source_image: str) -> None:
+    if st.session_state.get(review_panel_key(source_image), True):
+        st.session_state.closed_review_sources.discard(source_image)
+    else:
+        st.session_state.closed_review_sources.add(source_image)
+
+
 def complete_review_card(source_image: str) -> None:
-    """Hide a finished card, then return to the first genuinely unfinished card."""
+    """Hide a finished card and move to an unfinished card that is still open."""
     record = find_record(source_image)
     if record is None or record.get("Status") != "OK":
         return
     st.session_state.stable_review_sources.discard(source_image)
     st.session_state.review_navigation = {
-        "target": first_pending_review_key(st.session_state.records),
+        "target": first_pending_review_key(st.session_state.records, st.session_state.closed_review_sources),
         "token": uuid.uuid4().hex,
     }
 
@@ -883,9 +893,17 @@ def render_review_workspace(students: dict, template: dict) -> None:
         ]
         if not check_records:
             st.info("本批次没有需要人工检查的项目。")
+        pending_checks = [record for record in check_records if record["Status"] in PENDING_REVIEW_STATUSES]
+        if pending_checks and all(record["Source Image"] in st.session_state.closed_review_sources for record in pending_checks):
+            st.info(f"还有 {len(pending_checks)} 张待复核考卷已折叠，请手动展开后继续审核。")
         for record in check_records:
             display_status = "已完成" if record["Status"] == "OK" else record["Status"]
-            with st.container(key=review_card_key(record["Source Image"])), st.expander(f"{display_status} · {record['Source Image']}", expanded=True):
+            panel_key = review_panel_key(record["Source Image"])
+            st.session_state.setdefault(panel_key, record["Source Image"] not in st.session_state.closed_review_sources)
+            with st.container(key=review_card_key(record["Source Image"])), st.expander(
+                f"{display_status} · {record['Source Image']}", expanded=True, key=panel_key,
+                on_change=remember_review_panel_state, args=(record["Source Image"],),
+            ):
                 render_card_overview(record, template)
                 render_exam_identity_review(record, students)
                 st.markdown("#### 答题内容核对")
@@ -994,7 +1012,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
                     st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
                     st.button(
                         "完成并收起本张", key=f"hide_completed_{record['Source Image']}",
-                        help="收起后自动定位到第一张尚未完成的考卷；全部完成后定位到导出区。",
+                        help="收起后定位到第一张未完成且仍展开的考卷，保持手动折叠状态；全部完成后定位到导出区。",
                         on_click=complete_review_card, args=(record["Source Image"],),
                     )
 

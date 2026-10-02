@@ -5,13 +5,15 @@ import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 async function verifyReviewNavigation(page, fullRunBefore) {
-  const card = source => page.locator('.st-key-review_card_' + createHash('sha256').update(source).digest('hex'));
+  const cardSelector = source => '.st-key-review_card_' + createHash('sha256').update(source).digest('hex');
+  const card = source => page.locator(cardSelector(source));
   const earlier = card('未复核 01（考号待确认）.png');
   const completed = card('已完成 02.png');
   const later = card('未复核 03（答题待确认）.png');
   const cardForms = target => target.locator('[class*="st-key-review_anchor_"] [data-testid="stForm"]');
-  const expectAtTop = async target => {
-    const selector = await target.evaluate(node => '.' + [...node.classList].find(name => name.startsWith('st-key-review_card_')));
+  const expectAtTop = async (target, source) => {
+    const selector = cardSelector(source);
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, selector);
     await page.waitForFunction(selector => {
       const element = document.querySelector(selector);
       return element && Math.abs(element.getBoundingClientRect().top - 84) <= 1;
@@ -23,14 +25,10 @@ async function verifyReviewNavigation(page, fullRunBefore) {
     assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore, 'Closing a card reran the whole app.');
   };
   await cardForms(earlier).nth(0).getByText('C', {exact: true}).click();
-  await earlier.locator('summary').first().click();
-  await page.waitForFunction(selector => !document.querySelector(selector)?.querySelector('details')?.open,
-                            '.st-key-review_card_' + createHash('sha256').update('未复核 01（考号待确认）.png').digest('hex'));
-  assert.equal(await earlier.locator('details').first().evaluate(node => node.open), false);
   await cardForms(later).nth(0).getByText('C', {exact: true}).click();
   await completed.getByRole('button', {name: '完成并收起本张', exact: true}).click();
   await completed.waitFor({state: 'detached'});
-  await expectAtTop(earlier);
+  await expectAtTop(earlier, '未复核 01（考号待确认）.png');
   assert.ok(await cardForms(earlier).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
   assert.ok(await cardForms(later).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
   assert.ok(await page.getByRole('button', {name: /^(导出并另存最终成绩|另存 Excel 备份)/}).isDisabled());
@@ -64,7 +62,7 @@ async function verifyReviewNavigation(page, fullRunBefore) {
   await finish.focus();
   await finish.press('Enter');
   await earlier.waitFor({state: 'detached'});
-  await expectAtTop(later);
+  await expectAtTop(later, '未复核 03（答题待确认）.png');
   assert.ok(await cardForms(later).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
   for (let index = 0; index < 8; index++) {
     const target = cardForms(later).nth(index);
@@ -90,6 +88,72 @@ async function verifyReviewNavigation(page, fullRunBefore) {
   assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore);
   console.log('Closing cards returns to the first unfinished card, skips completed cards, preserves input, supports keyboard completion and reaches export when finished.');
 }
+async function verifyFoldedNavigation(page, fullRunBefore) {
+  const selector = number => '.st-key-review_card_' + createHash('sha256').update(`待复核 ${String(number).padStart(2, '0')}.png`).digest('hex');
+  const card = number => page.locator(selector(number));
+  const forms = number => card(number).locator('[class*="st-key-review_anchor_"] [data-testid="stForm"]');
+  const ensureClosed = async () => {
+    for (let number = 1; number <= 3; number++) {
+      assert.equal(await card(number).locator('details').first().evaluate(node => node.open), false,
+                   `Manually collapsed card ${number} was reopened.`);
+    }
+  };
+  await forms(1).nth(0).getByText('C', {exact: true}).click();
+  await forms(5).nth(0).getByText('C', {exact: true}).click();
+  for (let number = 1; number <= 3; number++) {
+    await card(number).locator('summary').first().click();
+    await page.waitForFunction(selector => document.querySelector(selector)?.querySelector('details')?.open === false, selector(number));
+    await page.waitForTimeout(200);
+  }
+  await ensureClosed();
+  assert.ok(await forms(1).nth(0).getByRole('radio', {name: 'C', exact: true, includeHidden: true}).isChecked());
+  assert.ok(await forms(5).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
+  for (let index = 0; index < 8; index++) {
+    const target = forms(4).nth(index);
+    await target.getByText('A', {exact: true}).click();
+    await target.getByRole('button', {name: '保存该项修正', exact: true}).click();
+    await target.getByRole('button', {name: '修改并重新保存', exact: true}).waitFor();
+    await ensureClosed();
+  }
+  await card(4).getByRole('button', {name: '完成并收起本张', exact: true}).click();
+  await card(4).waitFor({state: 'detached'});
+  await page.waitForFunction(selector => Math.abs(document.querySelector(selector)?.getBoundingClientRect().top - 84) <= 1, selector(5));
+  await page.waitForTimeout(600);
+  await ensureClosed();
+  assert.ok(await card(5).locator('details').first().evaluate(node => node.open));
+  assert.ok(await card(5).evaluate(node => node.contains(document.activeElement)));
+  assert.ok(await forms(5).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
+  assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore);
+  for (let index = 0; index < 8; index++) {
+    const target = forms(5).nth(index);
+    await target.getByText('A', {exact: true}).click();
+    await target.getByRole('button', {name: '保存该项修正', exact: true}).click();
+    await target.getByRole('button', {name: '修改并重新保存', exact: true}).waitFor();
+  }
+  const finish = card(5).getByRole('button', {name: '完成并收起本张', exact: true});
+  await finish.focus();
+  await finish.press('Enter');
+  await card(5).waitFor({state: 'detached'});
+  const remainingNotice = page.getByText('还有 3 张待复核考卷已折叠，请手动展开后继续审核。', {exact: true});
+  await remainingNotice.waitFor();
+  await page.waitForTimeout(600);
+  await ensureClosed();
+  assert.ok(await page.getByRole('button', {name: /^(导出并另存最终成绩|另存 Excel 备份)/}).isDisabled(), 'Collapsed pending cards were treated as finished.');
+  await card(1).locator('summary').first().click();
+  await page.waitForFunction(selector => document.querySelector(selector)?.querySelector('details')?.open === true, selector(1));
+  await remainingNotice.waitFor({state: 'detached'});
+  assert.ok(await forms(1).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
+  for (const number of [2, 3]) {
+    assert.equal(await card(number).locator('details').first().evaluate(node => node.open), false);
+  }
+  await card(1).locator('summary').first().click();
+  await page.waitForFunction(selector => document.querySelector(selector)?.querySelector('details')?.open === false, selector(1));
+  await remainingNotice.waitFor();
+  await ensureClosed();
+  assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore, 'Expander changes reran the whole app.');
+  console.log('Three manually collapsed cards stay closed while completing card four; navigation reaches open card five, and collapsed pending cards still block export.');
+}
+
 const chrome = process.env.JOY_BROWSER_EXECUTABLE || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined);
 const browser = await chromium.launch({executablePath: chrome && existsSync(chrome) ? chrome : undefined, headless: true});
 try {
@@ -100,7 +164,7 @@ try {
   await page.goto(`http://127.0.0.1:${process.argv[2]}?scenario=${scenario}`);
   const forms = page.locator('[class*="st-key-review_anchor_"] [data-testid="stForm"]');
   await page.getByRole('heading', {name: '基础信息', exact: true}).first().waitFor({timeout: 20000});
-  if (scenario !== 'id-only') await forms.nth(scenario === 'navigation' ? 15 : 7).waitFor({timeout: 20000});
+  if (scenario !== 'id-only') await forms.nth(scenario === 'folded-navigation' ? 39 : scenario === 'navigation' ? 15 : 7).waitFor({timeout: 20000});
   if (process.env.JOY_TEST_ZOOM && process.env.JOY_TEST_ZOOM !== '100') {
     await page.getByRole('button', {name: '🔍 界面缩放'}).click();
     await page.getByText(`${process.env.JOY_TEST_ZOOM}%`, {exact: true}).click();
@@ -108,7 +172,10 @@ try {
     await page.waitForTimeout(400);
   }
   const fullRunBefore = await page.getByText(/^Full app runs: /).innerText();
-  if (scenario === 'navigation') {
+  if (scenario === 'folded-navigation') {
+    await verifyFoldedNavigation(page, fullRunBefore);
+    assert.deepEqual(pageErrors, [], 'Browser errors occurred.');
+  } else if (scenario === 'navigation') {
     await verifyReviewNavigation(page, fullRunBefore);
     assert.deepEqual(pageErrors, [], 'Browser errors occurred.');
   } else {

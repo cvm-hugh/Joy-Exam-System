@@ -30,12 +30,9 @@
     const scroller = doc.querySelector('[data-testid="stMain"]') || doc.scrollingElement;
     // Wait for the requested element to mount before changing the scroll position.
     if (form && scroller) {
-      const summary = controller.navigation ? form.querySelector('summary') : null;
-      const details = summary?.closest('details');
-      if (details && !details.open) summary.click();
       const delta = form.getBoundingClientRect().top - saved.top;
       if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
-      if (controller.navigation && !saved.focused) {
+      if (controller.navigation && !form.contains(doc.activeElement)) {
         const heading = form.querySelector('summary, h1, h2, h3, h4');
         if (heading) {
           if (heading.tagName !== 'SUMMARY') heading.setAttribute('tabindex', '-1');
