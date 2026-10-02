@@ -137,21 +137,45 @@ def answer_card_preview(path: Path) -> np.ndarray | None:
         return None
 
 
-def prepare_mark_review(record: dict[str, Any], path: Path, template: dict[str, Any]) -> list[dict[str, Any]]:
-    """返回无法判定的填涂框，或需人工确认的整 Part 空白。"""
+def prepare_mark_review(
+    record: dict[str, Any], path: Path, template: dict[str, Any],
+    item_rows: list[dict[str, Any]] | None = None, resolved: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """根据原图和已保存复核结果生成尚待确认的项目。"""
+    if record.get("Manual Override"):
+        return []
     try:
         image = normalize(_read_image(path), template)
     except Exception:
         return [{"key": "image", "title": "图片定位失败", "detail": "四角定位块或图像无法读取，需人工查看原图。", "choices": [], "crop": None}]
     issues: list[dict[str, Any]] = []
+    source = str(record.get("Source Image") or path.name)
+    saved_keys = resolved or set()
+    confirmed_questions = {
+        (row.get("Section"), str(row.get("Question")))
+        for row in (item_rows or [])
+        if row.get("Source Image") == source and row.get("Manual Correction") == "是"
+    }
+    reopened_keys = set(record.get("Reopened Review Questions", []))
+    expanded_sections = set(record.get("Expanded Review Sections", []))
+    reviewed_sections = set(record.get("Reviewed Blank Sections", []))
+    manual_score_columns = set(record.get("Manual Score Overrides", {}))
     for template_root, part, section in QUESTION_GROUPS:
+        score_column = "_".join(value.capitalize() for value in section.split("_"))
+        section_reopened = any(key.startswith(f"question:{section}:") for key in reopened_keys)
+        if not section_reopened and (section in reviewed_sections or score_column in manual_score_columns):
+            continue
         unread_candidates: list[dict[str, Any]] = []
         for number, options in template[template_root][part].items():
+            question_key = f"question:{section}:{number}"
+            confirmed = (section, str(number)) in confirmed_questions or issue_key(source, question_key) in saved_keys
+            if confirmed and question_key not in reopened_keys:
+                continue
             read = _read_one(image, options)
             if read.value is None:
                 blank_candidate = max(read.ratios.values()) < FILL_THRESHOLD
                 unread_candidates.append({"key": f"question:{section}:{number}", "title": f"题号 {number}", "detail": "当前识别结果：空白候选" if blank_candidate else "当前识别结果：无法明确判断", "choices": list(options.keys()), "crop": _crop(image, list(options.values())), "section": section, "number": number, "blank_candidate": blank_candidate})
-        if unread_candidates and len(unread_candidates) == len(template[template_root][part]):
+        if unread_candidates and len(unread_candidates) == len(template[template_root][part]) and section not in expanded_sections:
             issues.append({"key": f"part_empty:{section}", "kind": "part_empty", "title": PART_LABELS[section], "detail": f"{len(unread_candidates)}/{len(unread_candidates)} 无有效作答（空白候选）", "section": section, "question_issues": unread_candidates, "question_range": f"{unread_candidates[0]['number']}-{unread_candidates[-1]['number']}"})
         else:
             # 机器的 BLANK 只表示没有检测到足够强的填涂信号，不能等同于
@@ -163,6 +187,12 @@ def prepare_mark_review(record: dict[str, Any], path: Path, template: dict[str, 
         entry_states = dict(record.get("Score Entry States", {}))
         original_entry_states = dict(record.get("Original Score Entry States", {}))
         original_scores = dict(record.get("Original Scores", {}))
+        confirmed_score = (
+            entry_states.get(record_column) == "MANUAL"
+            or record_column in manual_score_columns
+            or record_column in record.get("Reviewed Blank Scores", [])
+            or issue_key(source, f"score:{field}") in saved_keys
+        )
         if read.value is None:
             blank_candidate = max(read.ratios.values()) < FILL_THRESHOLD
             detected_state = "BLANK" if blank_candidate else "AMBIGUOUS"
@@ -170,10 +200,10 @@ def prepare_mark_review(record: dict[str, Any], path: Path, template: dict[str, 
             if record_column not in record.get("Original Score Entry States", {}):
                 # 兼容旧进度：旧版曾把无法读取的教师登分原始值保存成 0。
                 original_scores[record_column] = None
-            if entry_states.get(record_column) != "MANUAL":
+            if not confirmed_score:
                 record[record_column] = 0 if blank_candidate else record.get(record_column)
                 entry_states[record_column] = detected_state
-            if field in GRADER_REVIEW_FIELDS:
+            if not confirmed_score and field in GRADER_REVIEW_FIELDS:
                 issues.append({
                     "key": f"score:{field}",
                     "kind": "grader_score",
@@ -184,12 +214,12 @@ def prepare_mark_review(record: dict[str, Any], path: Path, template: dict[str, 
                     "field": field,
                     "allow_blank": False,
                 })
-            elif not blank_candidate:
+            elif not confirmed_score and not blank_candidate:
                 issues.append({"key": f"score:{field}", "title": SCORE_LABELS[field], "detail": "当前识别结果：无法明确判断", "choices": sorted(options.keys(), key=int), "crop": _crop(image, list(options.values())), "field": field})
         else:
             original_entry_states.setdefault(record_column, "SCORED")
             original_scores.setdefault(record_column, int(read.value))
-            if entry_states.get(record_column) != "MANUAL":
+            if not confirmed_score:
                 entry_states[record_column] = "SCORED"
         record["Score Entry States"] = entry_states
         record["Original Score Entry States"] = original_entry_states
@@ -199,6 +229,8 @@ def prepare_mark_review(record: dict[str, Any], path: Path, template: dict[str, 
 
 def low_answer_warning(record: dict[str, Any], item_rows: list[dict[str, Any]], issues: list[dict[str, Any]]) -> str | None:
     """给大面积未作答提供人工提醒，不更改成绩或状态。"""
+    if not any(item.get("section") for item in issues):
+        return None
     relevant = [row for row in item_rows if row["Source Image"] == record["Source Image"]]
     answered = sum(bool(row["Marked Answer"]) for row in relevant)
     empty_sections = [item["section"] for item in issues if item.get("kind") == "part_empty"]

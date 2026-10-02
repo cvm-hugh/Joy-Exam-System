@@ -31,7 +31,7 @@ from app.roster_import import generate_roster_template, normalize_exam_id, read_
 from app.student_information import student_information_issues
 from app.review_store import (audit_entry, delete_review_session,
                               load_review_session, save_review_session)
-from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results, load_students, load_template, update_score_totals
+from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results, load_students, load_template, update_review_flag, update_score_totals
 from app.ui_helpers import (answer_card_preview, apply_exam_id,
                             apply_mark, apply_part_empty,
                             apply_student_supplement, choose_macos_folder,
@@ -334,14 +334,17 @@ def render_exam_setup() -> None:
 
 
 def refresh_status(record: dict, students: dict) -> None:
+    update_review_flag(record, st.session_state.item_rows)
     if record.get("Manual Override"):
         record["Status"] = "OK"
+        record["Low Answer Warning"] = None
         return
     source = record["Source Image"]
+    pending = [item for item in st.session_state.issues.get(source, []) if issue_key(source, item["key"]) not in st.session_state.resolved]
+    record["Low Answer Warning"] = low_answer_warning(record, st.session_state.item_rows, pending)
     if (record["Exam ID"] not in students and not record.get("Identity Confirmed")) or "?" in str(record["Exam ID"]):
         record["Status"] = "CHECK_ID"
         return
-    pending = [item for item in st.session_state.issues.get(source, []) if issue_key(source, item["key"]) not in st.session_state.resolved]
     if any(item.get("kind") == "part_empty" for item in pending):
         record["Status"] = "CHECK_PART_EMPTY"
     else:
@@ -373,7 +376,7 @@ def rescan_modified_source(record: dict, template_data: dict, student_data: dict
     st.session_state.item_rows = [
         row for row in st.session_state.item_rows if row.get("Source Image") != source
     ] + new_items
-    issues = prepare_mark_review(new_record, path, template_data)
+    issues = prepare_mark_review(new_record, path, template_data, new_items)
     if issues:
         st.session_state.issues[source] = issues
         new_record["Low Answer Warning"] = low_answer_warning(new_record, new_items, issues)
@@ -711,6 +714,7 @@ def save_mark_review(source_image: str, item_key: str, students: dict, choice_wi
         changed_at=entry["Changed At"],
     )
     st.session_state.resolved.add(issue_key(source_image, item["key"]))
+    record["Reopened Review Questions"] = [key for key in record.get("Reopened Review Questions", []) if key != item["key"]]
     # 已保存的题目在当前操作会话中保留原位，避免页面高度突变导致滚动跳动。
     st.session_state.stable_review_sources.add(source_image)
     refresh_status(record, students)
@@ -794,7 +798,7 @@ if resolved_folder and st.session_state.loaded_session_folder != resolved_folder
             source_path = folder / str(record.get("Source Image", ""))
             record["Source Path"] = str(source_path.resolve())
             if source_path.is_file():
-                issues = prepare_mark_review(record, source_path, template)
+                issues = prepare_mark_review(record, source_path, template, st.session_state.item_rows, st.session_state.resolved)
                 if issues:
                     st.session_state.issues[record["Source Image"]] = issues
             refresh_status(record, students)
@@ -814,7 +818,7 @@ if st.button(scan_button_label, type="primary", disabled=not images):
         record, item_rows = scan_one(path, template, students)
         st.session_state.records.append(record)
         st.session_state.item_rows.extend(item_rows)
-        issues = prepare_mark_review(record, path, template)
+        issues = prepare_mark_review(record, path, template, item_rows)
         if issues:
             st.session_state.issues[path.name] = issues
             record["Low Answer Warning"] = low_answer_warning(record, item_rows, issues)
@@ -940,7 +944,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
                         if item.get("kind") == "part_empty":
                             st.write(f"Part：{item['title']}")
                             st.write(f"题目范围：{item['question_range']}")
-                            st.write(f"检测结果：{item['detail']}")
+                            st.write("复核结果：已确认整 Part 为空（已保存）" if item_is_resolved else f"检测结果：{item['detail']}")
                             part_col_1, part_col_2 = st.columns(2)
                             with part_col_1:
                                 if st.button("确认整Part为空", disabled=item_is_resolved, key=f"confirm_part_{record['Source Image']}_{item['section']}"):
@@ -955,6 +959,8 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                         review_basis=st.session_state.review_basis,
                                         changed_at=entry["Changed At"],
                                     )
+                                    confirmed_keys = {question["key"] for question in item["question_issues"]}
+                                    record["Reopened Review Questions"] = [key for key in record.get("Reopened Review Questions", []) if key not in confirmed_keys]
                                     st.session_state.resolved.add(issue_key(record["Source Image"], item["key"]))
                                     st.session_state.stable_review_sources.add(record["Source Image"])
                                     refresh_status(record, students)
@@ -964,6 +970,12 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                     st.rerun()
                             with part_col_2:
                                 if st.button("改为逐题检查" if item_is_resolved else "逐题检查", key=f"expand_part_{record['Source Image']}_{item['section']}"):
+                                    record["Expanded Review Sections"] = sorted(set(record.get("Expanded Review Sections", [])) | {item["section"]})
+                                    if item_is_resolved:
+                                        question_keys = {question["key"] for question in item["question_issues"]}
+                                        record["Reopened Review Questions"] = sorted(set(record.get("Reopened Review Questions", [])) | question_keys)
+                                        for question_key in question_keys:
+                                            st.session_state.resolved.discard(issue_key(record["Source Image"], question_key))
                                     item_index = issues.index(item)
                                     st.session_state.issues[record["Source Image"]] = (
                                         issues[:item_index] + item["question_issues"] + issues[item_index + 1:]
@@ -978,7 +990,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                 st.success("该 Part 已确认并保存。")
                             continue
                         st.write(f"题号或得分区域：{item['title']}")
-                        st.write(f"当前识别：{item['detail'].replace('当前识别结果：', '')}")
+                        st.write(f"{'原始识别（已复核）' if item_is_resolved else '当前识别'}：{item['detail'].replace('当前识别结果：', '')}")
                         if item["crop"] is not None:
                             st.image(item["crop"], caption="当前题目局部图", width=500)
                         if item["key"] == "image":

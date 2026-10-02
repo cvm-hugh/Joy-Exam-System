@@ -172,7 +172,7 @@ class ModelTests(unittest.TestCase):
         ):
             issues = prepare_mark_review(record, Path("card.jpg"), template)
 
-        self.assertEqual(len(issues), 1)
+        self.assertEqual(len(issues), 0)
         self.assertEqual(record["Written_Part2"], 5)
         self.assertEqual(record["Score Entry States"]["Written_Part2"], "MANUAL")
         self.assertEqual(record["Original Score Entry States"]["Written_Part2"], "BLANK")

@@ -121,6 +121,10 @@ def update_review_flag(record: dict[str, Any], item_rows: list[dict[str, Any]]) 
     unresolved_blank_parts: list[str] = []
     reviewed_sections = set(record.get("Reviewed Blank Sections", []))
     for section, rows in grouped.items():
+        score_column = "_".join(value.capitalize() for value in section.split("_"))
+        if score_column in record.get("Manual Score Overrides", {}):
+            # 已有人工 Part 登分时，原图未读出的答案不能作为最终整段空白结论。
+            continue
         statuses = [
             row.get("Answer Status") or ("BLANK" if not row.get("Marked Answer") else "ANSWERED")
             for row in rows
@@ -130,7 +134,7 @@ def update_review_flag(record: dict[str, Any], item_rows: list[dict[str, Any]]) 
             numbers = "、".join(str(row.get("Question", "")) for row in rows)
             blank_parts.append(label)
             blank_details.append(f"{label}：{numbers}")
-            if section not in reviewed_sections:
+            if section not in reviewed_sections and not all(row.get("Manual Correction") == "是" for row in rows):
                 unresolved_blank_parts.append(label)
 
     entry_states = record.get("Score Entry States", {})
