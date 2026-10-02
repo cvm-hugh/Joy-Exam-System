@@ -1,0 +1,15 @@
+{
+  "name": "joy-exam-management",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "setup": "zsh scripts/setup-local.sh",
+    "start": "zsh scripts/start-local.sh",
+    "build": "npm --prefix services/results run build",
+    "desktop:build": "zsh scripts/build-macos-app.sh",
+    "check:source": "node scripts/check-source-independence.mjs",
+    "check": "npm run check:source && npm --prefix services/results run typecheck && npm --prefix services/results run lint",
+    "test": "zsh scripts/test-local.sh"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "pages": ["pages/query/index", "pages/result/index"],
+  "window": {
+    "navigationBarTitleText": "考试结果查询",
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#ffffff"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

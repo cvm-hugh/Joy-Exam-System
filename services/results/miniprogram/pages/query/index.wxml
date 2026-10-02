@@ -1,0 +1,19 @@
+<view class="page query-page">
+  <view class="brand-space" aria-hidden="true"></view>
+  <view class="display-heading hello-heading">{{greeting}}</view>
+  <view class="welcome-copy">{{welcome}}</view>
+  <view class="title">{{title}}</view>
+  <view class="subtitle">{{description}}</view>
+  <view class="query-card">
+    <label class="field-label" for="student-name">学生中文姓名 <text class="field-english">CHINESE NAME</text></label>
+    <input id="student-name" class="input" placeholder="请输入学生姓名" value="{{name}}" bindinput="onName" maxlength="40" disabled="{{loading || !open}}"/>
+    <label class="field-label" for="student-number">考号 <text class="field-english">NUMBER</text></label>
+    <input id="student-number" class="input" type="text" placeholder="请输入完整考号，保留开头的0" value="{{examNo}}" bindinput="onExamNo" maxlength="64" disabled="{{loading || !open}}"/>
+    <view wx:if="error" class="error">{{error}}</view>
+    <view wx:if="ready &amp;&amp; !open &amp;&amp; message" class="closed">{{message}}</view>
+    <button class="primary-button" bindtap="submit" loading="{{loading}}" disabled="{{loading || !ready || !open}}">{{!ready ? '正在获取查询状态…' : (open ? '立即查询' : '暂未开放查询')}}</button>
+    <button wx:if="!open" class="text-button" bindtap="loadStatus">刷新查询状态</button>
+  </view>
+  <view class="privacy-note">仅查询当前最新一批考试结果。<br/>姓名与考号须同时匹配，不展示原始成绩、总分或排名。</view>
+  <view class="footer">{{footer}}</view>
+</view>

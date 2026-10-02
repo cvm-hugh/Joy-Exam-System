@@ -1,0 +1,84 @@
+.query-page {
+  padding-top: 24rpx;
+  max-width: 900rpx;
+  margin: 0 auto;
+}
+.hello-heading {
+  font-size: 106rpx;
+  margin-top: 28rpx;
+}
+.welcome-copy {
+  white-space: pre-wrap;
+  font-family: Arial, sans-serif;
+  color: #858585;
+  font-size: 34rpx;
+  line-height: 1.25;
+  margin: 18rpx 0 32rpx;
+}
+.query-page .title {
+  white-space: pre-wrap;
+  font-size: 32rpx;
+  line-height: 1.5;
+}
+.query-page .subtitle {
+  white-space: pre-wrap;
+  margin-top: 12rpx;
+  font-size: 25rpx;
+  line-height: 1.7;
+}
+.query-card {
+  margin-top: 36rpx;
+}
+.query-card .primary-button {
+  min-width: 280rpx;
+  width: 68%;
+  max-width: 100%;
+  padding: 0 24rpx;
+}
+.privacy-note {
+  font-size: 23rpx;
+  line-height: 1.9;
+  color: #767676;
+  text-align: center;
+  padding: 30rpx 10rpx;
+}
+.footer {
+  white-space: pre-wrap;
+  font-size: 23rpx;
+  text-align: center;
+  color: #858585;
+  margin: 40rpx 0;
+}
+.field-label {
+  display: block;
+  font-size: 24rpx;
+  color: #626262;
+  margin: 28rpx 12rpx 12rpx;
+}
+.field-english {
+  color: #767676;
+  font-size: 20rpx;
+  margin-left: 12rpx;
+  letter-spacing: 1rpx;
+}
+.input {
+  height: 90rpx;
+  border: 1rpx solid transparent;
+  border-radius: 999rpx;
+  padding: 0 30rpx;
+  font-size: 28rpx;
+  background: #f4f4f4;
+}
+.input:focus {
+  border-color: #e60012;
+  background: #ffffff;
+}
+.closed {
+  font-size: 25rpx;
+  line-height: 1.8;
+  color: #8b7543;
+  background: #fbf7e9;
+  padding: 20rpx;
+  margin-top: 25rpx;
+  border-radius: 22rpx;
+}

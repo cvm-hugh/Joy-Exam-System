@@ -1,0 +1,1213 @@
+"""普通用户本地操作页面。识别和 Excel 输出仍由 scanner.py 负责。"""
+from __future__ import annotations
+
+import getpass
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+import uuid
+
+import streamlit as st
+import streamlit.components.v1 as components
+
+# Streamlit 直接执行本文件时只会加入 app/；显式加入工程根目录，
+# 以便开发环境和打包后的 App 都可导入 app.* 模块。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.answer_key_import import generate_answer_key_template, read_answer_key
+from app.constants import CONFIG_DIR, ensure_runtime_config
+from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
+from app.roster_import import generate_roster_template, read_roster, save_roster_snapshot
+from app.review_store import (audit_entry, delete_review_session,
+                              load_review_session, save_review_session)
+from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results, load_students, load_template, update_score_totals
+from app.ui_helpers import (MANUAL_SCORE_PARTS, answer_card_preview, apply_exam_id,
+                            apply_mark, apply_part_empty, apply_part_score,
+                            apply_student_supplement, choose_macos_folder,
+                            exam_id_crop, image_paths, issue_key, low_answer_warning,
+                            open_original_in_preview, prepare_mark_review, required_files,
+                            save_as_macos, save_current_results, scan_one)
+
+st.set_page_config(page_title="佳音考试管理 · 阅卷", layout="wide")
+st.title("佳音考试管理 · 阅卷")
+st.markdown(
+    """
+    <style>
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0ms !important;
+      scroll-behavior: auto !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def initialize() -> None:
+    defaults = {
+        "records": [], "item_rows": [], "issues": {}, "resolved": set(),
+        "confirmed_warnings": set(), "audit_log": [], "reviewer": getpass.getuser(),
+        "review_basis": "答题卡图片", "folder": "", "exports": None,
+        "edit_source": None, "edit_mode": None,
+        "loaded_session_folder": "", "view": "setup", "part_expand_notices": {},
+        "stable_review_sources": set(), "ui_zoom": 100,
+        "pending_image_rescan": None,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def render_display_controls() -> None:
+    """调整工作台内容的整体显示比例，不改变原图或识别分辨率。"""
+    with st.popover("🔍 界面缩放"):
+        st.radio(
+            "显示比例",
+            (75, 85, 100, 110),
+            horizontal=True,
+            key="ui_zoom",
+            format_func=lambda value: f"{value}%",
+            help="只缩放软件工作台，不会压缩答题卡图片或影响识别。",
+        )
+    zoom = int(st.session_state.ui_zoom) / 100
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stMainBlockContainer"] {{
+          zoom: {zoom};
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def install_review_scroll_lock() -> None:
+    """保存单题修正时锁定浏览器的纵向视线位置。
+
+    Streamlit 会在提交 form 后重绘整页。这段脚本在按下“保存该项修正”
+    的瞬间记住 scrollY，并在重绘及图片重新排版期间多次恢复。
+    """
+    st.iframe(
+        """
+        <script>
+        (() => {
+          const win = window.parent;
+          const doc = win.document;
+          const storageKey = "dingweice-review-scroll-y-v2";
+
+          if (win.__dingweiceReviewScrollCapture) {
+            doc.removeEventListener("pointerdown", win.__dingweiceReviewScrollCapture, true);
+          }
+          const capture = (event) => {
+            const button = event.target.closest && event.target.closest("button");
+            if (!button || !["保存该项修正", "修改并重新保存"].includes(button.innerText.trim())) return;
+            let node = button;
+            let formClass = null;
+            while (node && node !== doc.body) {
+              formClass = [...(node.classList || [])].find((name) => name.startsWith("st-key-review_form_"));
+              if (formClass) break;
+              node = node.parentElement;
+            }
+            const form = formClass
+              ? [...doc.querySelectorAll("[class]")].find((element) => element.classList.contains(formClass))
+              : null;
+            win.sessionStorage.setItem(storageKey, JSON.stringify({
+              y: win.scrollY,
+              formClass,
+              formTop: form ? form.getBoundingClientRect().top : null,
+              expires: Date.now() + 5000
+            }));
+          };
+          win.__dingweiceReviewScrollCapture = capture;
+          doc.addEventListener("pointerdown", capture, true);
+
+          let saved = null;
+          try {
+            saved = JSON.parse(win.sessionStorage.getItem(storageKey) || "null");
+          } catch (_) {
+            win.sessionStorage.removeItem(storageKey);
+          }
+          if (!saved || Date.now() > saved.expires) {
+            win.sessionStorage.removeItem(storageKey);
+            return;
+          }
+          const restoreScroll = () => {
+            const form = saved.formClass
+              ? [...doc.querySelectorAll("[class]")].find((element) => element.classList.contains(saved.formClass))
+              : null;
+            if (form && Number.isFinite(saved.formTop)) {
+              const delta = form.getBoundingClientRect().top - saved.formTop;
+              if (Math.abs(delta) > 1) {
+                win.scrollTo({top: saved.y + delta, left: win.scrollX, behavior: "instant"});
+              }
+            } else {
+              win.scrollTo({top: saved.y, left: win.scrollX, behavior: "instant"});
+            }
+          };
+          [0, 60, 150, 300, 600, 1000].forEach((delay) => {
+            win.setTimeout(restoreScroll, delay);
+          });
+          win.setTimeout(() => win.sessionStorage.removeItem(storageKey), 1200);
+        })();
+        </script>
+        """,
+        height=1,
+        width="content",
+    )
+
+
+def persist_current_session() -> None:
+    """每次人工操作后立即保存，不依赖 Streamlit 会话内存。"""
+    if not st.session_state.folder or not st.session_state.records:
+        return
+    save_review_session(
+        st.session_state.folder,
+        st.session_state.records,
+        st.session_state.item_rows,
+        st.session_state.audit_log,
+        st.session_state.resolved,
+        st.session_state.confirmed_warnings,
+        st.session_state.reviewer,
+    )
+
+
+def ensure_reviewer() -> str:
+    """人工修正必须留下操作人；界面未填时使用当前 Mac 账户。"""
+    reviewer = str(st.session_state.get("reviewer", "")).strip()
+    if not reviewer:
+        reviewer = getpass.getuser().strip() or "本机操作人"
+        st.session_state.reviewer = reviewer
+    return reviewer
+
+
+def _source_version(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+@st.cache_data(show_spinner=False)
+def cached_answer_card_preview(path_text: str, source_version: int):
+    """缓存未改变的整张答题卡，避免每次保存都重新解码图片。"""
+    del source_version
+    return answer_card_preview(Path(path_text))
+
+
+@st.cache_data(show_spinner=False)
+def cached_exam_id_crop(path_text: str, source_version: int, template_data: dict):
+    """缓存考号区域的定位和裁切结果。"""
+    del source_version
+    return exam_id_crop(Path(path_text), template_data)
+
+
+def append_audit(
+    record: dict,
+    *,
+    change_type: str,
+    target: str,
+    original_value: object,
+    corrected_value: object,
+    note: str = "",
+) -> dict:
+    entry = audit_entry(
+        record,
+        operator=st.session_state.reviewer,
+        change_type=change_type,
+        target=target,
+        original_value=original_value,
+        corrected_value=corrected_value,
+        review_basis=st.session_state.review_basis,
+        note=note,
+    )
+    st.session_state.audit_log.append(entry)
+    return entry
+
+
+def save_uploaded_xlsx(uploaded) -> Path:
+    """先写入临时文件校验，再替换 V3 的本机配置副本。"""
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temporary:
+        temporary.write(uploaded.getvalue())
+    return Path(temporary.name)
+
+
+def render_roster_setup() -> None:
+    st.subheader("导入本次学生名单")
+    st.info("首次使用或开始新考试时，请导入本次名单。App 不会内置或覆盖你的学生数据。")
+    if notice := st.session_state.pop("roster_import_notice", None):
+        st.success(notice)
+    if warning := st.session_state.pop("roster_import_warning", None):
+        st.warning(warning)
+    roster_template = CONFIG_DIR / "学业水平测试统计名单-模板.xlsx"
+    st.caption("模板保留原始名单的全部列；“精修笔试通过”和六维得分系数在本阶段留空，由结果管理系统后续填入。")
+    if st.button("生成《学业水平测试统计名单-模板》"):
+        generate_roster_template(roster_template)
+        opened = subprocess.run(["open", str(roster_template)], capture_output=True).returncode == 0
+        message = "学生名单模板已生成并打开。" if opened else f"已生成：{roster_template}"
+        st.success(message)
+    uploaded = st.file_uploader("选择学生名单 .xlsx", type=["xlsx"], key="roster_upload")
+    if st.button("载入学生名单", type="primary", disabled=uploaded is None):
+        temporary_path = save_uploaded_xlsx(uploaded)
+        try:
+            imported = read_roster(temporary_path)
+            save_roster_snapshot(temporary_path, CONFIG_DIR, overwrite=True)
+            st.session_state.roster_import_notice = (
+                f"学生名单已载入：{imported.count} 人。"
+                "已转换为 App 所需格式，不会修改原 Excel。"
+            )
+            if imported.skipped_rows:
+                st.session_state.roster_import_warning = (
+                    f"有 {len(imported.skipped_rows)} 行因缺少学号未纳入答题卡匹配："
+                    + "；".join(imported.skipped_rows)
+                    + "。该学生若有答题卡，会在扫描后按“名单外考号”保留，可再手动补全。"
+                )
+            st.rerun()
+        except Exception as exc:
+            st.error(f"无法载入学生名单：{exc}")
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+
+def render_answer_setup(template: dict) -> None:
+    st.subheader("设置本次正确答案")
+    package = legacy_v1_package(template)
+    answer_template = CONFIG_DIR / "答案录入模板.xlsx"
+    st.info("正确答案不包含在 App 中。请先生成答案录入表，填写后再导入。")
+    if st.button("生成答案录入 Excel 模板", type="primary"):
+        generate_answer_key_template(package, answer_template)
+        opened = subprocess.run(["open", str(answer_template)], capture_output=True).returncode == 0
+        if opened:
+            st.success("答案录入模板已生成并打开。填写 Correct Answer 列后保存，再回到此处导入。")
+        else:
+            st.success(f"已生成：{answer_template}。填写 Correct Answer 列后保存，再回到此处导入。")
+    uploaded = st.file_uploader("导入已填写的答案表 .xlsx", type=["xlsx"], key="answer_upload")
+    if st.button("载入正确答案", disabled=uploaded is None):
+        temporary_path = save_uploaded_xlsx(uploaded)
+        try:
+            answers = read_answer_key(temporary_path, package)
+            legacy_key = answers_to_legacy_key(answers)
+            (CONFIG_DIR / "answer_key.json").write_text(json.dumps(legacy_key, ensure_ascii=False, indent=2), encoding="utf-8")
+            st.success(f"正确答案已载入：{len(answers)} 道客观题。")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"无法载入正确答案：{exc}")
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+
+def render_exam_setup() -> None:
+    """每次打开 App 都显示本次考试的四项设置，不依赖是否已有旧配置。"""
+    files = required_files()
+    st.caption("本次考试设置。确认名单、答题卡、标准答案和照片目录后，再进入扫描工作台。")
+
+    st.subheader("1. 学生名单")
+    roster_ready = False
+    if files["学生名单"].is_file():
+        try:
+            roster = read_roster(files["学生名单"])
+            st.success(f"已载入：{files['学生名单'].name}（{roster.count} 人）")
+            roster_ready = True
+        except Exception as exc:
+            st.error(f"当前学生名单无法读取：{exc}")
+    else:
+        st.warning("尚未载入本次学生名单。")
+    with st.expander("导入 / 更换学生名单", expanded=not roster_ready):
+        render_roster_setup()
+
+    st.subheader("2. 答题卡模式")
+    template_ready = False
+    try:
+        setup_template = load_template()
+        st.success("定位测 A3 V1（内置兼容模板，已载入）")
+        st.caption("当前版本仅提供这一种已经通过验证的答题卡模式；新答题卡制作与定位测试将在下一阶段加入。")
+        template_ready = True
+    except Exception as exc:
+        setup_template = None
+        st.error(f"答题卡模板无法载入：{exc}")
+
+    st.subheader("3. 标准答案")
+    answer_ready = files["标准答案"].is_file()
+    if answer_ready:
+        st.success(f"已载入：{files['标准答案'].name}")
+    else:
+        st.warning("尚未载入本次标准答案。")
+    if setup_template is not None:
+        with st.expander("生成答案录入表 / 导入正确答案", expanded=not answer_ready):
+            render_answer_setup(setup_template)
+
+    st.subheader("4. 照片目录")
+    directory_col, chooser_col = st.columns([5, 1])
+    with directory_col:
+        folder_text = st.text_input(
+            "答题卡照片所在目录",
+            value=st.session_state.folder,
+            placeholder="例如：/Users/你的用户名/Desktop/本次定位测照片",
+        )
+    with chooser_col:
+        st.write("")
+        if st.button("选择文件夹", width="stretch", key="setup_choose_folder"):
+            selected = choose_macos_folder()
+            if selected:
+                st.session_state.folder = selected
+                st.rerun()
+    if folder_text != st.session_state.folder:
+        st.session_state.folder = folder_text
+    folder = Path(st.session_state.folder).expanduser() if st.session_state.folder else None
+    images = image_paths(folder) if folder and folder.is_dir() else []
+    folder_ready = bool(images)
+    if folder_ready:
+        st.success(f"已选择：{folder}；发现 {len(images)} 张可处理图片。")
+    elif st.session_state.folder:
+        st.warning("该目录不存在、无法访问，或其中没有 jpg / jpeg / png / heic 图片。")
+    else:
+        st.warning("尚未选择照片目录。")
+
+    st.divider()
+    ready = roster_ready and template_ready and answer_ready and folder_ready
+    if not ready:
+        st.info("完成以上四项设置后，即可进入扫描工作台。")
+    if st.button("进入扫描工作台", type="primary", disabled=not ready, key="enter_scan_workspace"):
+        st.session_state.view = "scan"
+        st.rerun()
+
+
+def refresh_status(record: dict, students: dict) -> None:
+    if record.get("Manual Override"):
+        record["Status"] = "OK"
+        return
+    source = record["Source Image"]
+    if (record["Exam ID"] not in students and not record.get("Identity Confirmed")) or "?" in str(record["Exam ID"]):
+        record["Status"] = "CHECK_ID"
+        return
+    pending = [item for item in st.session_state.issues.get(source, []) if issue_key(source, item["key"]) not in st.session_state.resolved]
+    if any(item.get("kind") == "part_empty" for item in pending):
+        record["Status"] = "CHECK_PART_EMPTY"
+    else:
+        record["Status"] = "CHECK_MARK" if pending else "OK"
+
+
+def open_result_source_image() -> None:
+    """处理结果表的 File Name 按钮回调。"""
+    clicked = st.session_state.get("result_source_open")
+    if not clicked:
+        return
+    row_index = clicked.get("row")
+    records = st.session_state.get("records", [])
+    if not isinstance(row_index, int) or not 0 <= row_index < len(records):
+        st.session_state.preview_notice = (False, "无法定位该条扫描记录。")
+        return
+    st.session_state.preview_notice = open_original_in_preview(Path(records[row_index]["Source Path"]))
+
+
+def rescan_modified_source(record: dict, template_data: dict, student_data: dict) -> None:
+    """只重新识别已保存的当前图片，并替换其旧结果。"""
+    path = Path(record["Source Path"])
+    old_total = record.get("Total", "")
+    new_record, new_items = scan_one(path, template_data, student_data)
+    source = record["Source Image"]
+    index = st.session_state.records.index(record)
+    st.session_state.records[index] = new_record
+    st.session_state.item_rows = [
+        row for row in st.session_state.item_rows if row.get("Source Image") != source
+    ] + new_items
+    issues = prepare_mark_review(new_record, path, template_data)
+    if issues:
+        st.session_state.issues[source] = issues
+        new_record["Low Answer Warning"] = low_answer_warning(new_record, new_items, issues)
+    else:
+        st.session_state.issues.pop(source, None)
+    st.session_state.resolved = {
+        value for value in st.session_state.resolved if not value.startswith(f"{source}::")
+    }
+    st.session_state.confirmed_warnings.discard(source)
+    st.session_state.stable_review_sources.discard(source)
+    refresh_status(new_record, student_data)
+    append_audit(
+        new_record,
+        change_type="重新识别修改后图片",
+        target="答题卡图片",
+        original_value=old_total,
+        corrected_value=new_record.get("Total", ""),
+        note="检测到原图已保存，仅重新识别当前图片",
+    )
+    st.session_state.pending_image_rescan = None
+    st.session_state.exports = None
+    persist_current_session()
+
+
+def show_source_file_name(record: dict, key: str) -> None:
+    """在人工检查页提供“修图—保存—自动重识别”的单一入口。"""
+    st.write(f"File Name：`{record['File Name']}`")
+    pending = st.session_state.get("pending_image_rescan") or {}
+    is_waiting = pending.get("source_image") == record["Source Image"]
+    if st.button(
+        "等待图片保存…" if is_waiting else "修改图片并重新识别",
+        key=f"edit_rescan_{key}",
+        disabled=is_waiting,
+        help="用 Mac“预览”打开原图；保存修改后，软件会自动重新识别本张。",
+    ):
+        path = Path(record["Source Path"])
+        baseline = path.stat().st_mtime_ns if path.is_file() else 0
+        opened, message = open_original_in_preview(path)
+        if not opened:
+            st.error(message)
+        else:
+            st.session_state.pending_image_rescan = {
+                "source_image": record["Source Image"],
+                "baseline_mtime_ns": baseline,
+            }
+            st.session_state.image_rescan_notice = (
+                "info",
+                f"已打开 {record['File Name']}。请在“预览”中修改并保存；检测到保存后将自动重新识别。",
+            )
+            st.rerun()
+    st.caption("修改并保存原图后，软件只重新识别本张，不重扫整批。")
+
+
+@st.fragment(run_every="1s")
+def watch_pending_image_rescan() -> None:
+    """监视“预览”中的原图保存，变更后自动重识别。"""
+    pending = st.session_state.get("pending_image_rescan")
+    if not pending:
+        return
+    record = find_record(str(pending.get("source_image", "")))
+    if record is None:
+        st.session_state.pending_image_rescan = None
+        return
+    path = Path(record["Source Path"])
+    current_mtime = path.stat().st_mtime_ns if path.is_file() else 0
+    baseline = int(pending.get("baseline_mtime_ns", 0))
+    if current_mtime > baseline:
+        rescan_modified_source(record, template, students)
+        st.session_state.image_rescan_notice = (
+            "success", f"已检测到 {record['File Name']} 保存，并完成本张重新识别。",
+        )
+        st.rerun()
+    st.info(f"正在等待 {record['File Name']} 保存。保存后将自动重新识别。")
+    control_1, control_2 = st.columns(2)
+    with control_1:
+        if st.button("已保存，立即重新识别", key="force_pending_image_rescan"):
+            rescan_modified_source(record, template, students)
+            st.session_state.image_rescan_notice = ("success", f"{record['File Name']} 已重新识别。")
+            st.rerun()
+    with control_2:
+        if st.button("取消本次修图", key="cancel_pending_image_rescan"):
+            st.session_state.pending_image_rescan = None
+            st.rerun()
+
+
+def find_record(source_image: str) -> dict | None:
+    return next((record for record in st.session_state.records if record["Source Image"] == source_image), None)
+
+
+def reset_editor_widgets(source_image: str) -> None:
+    prefixes = (f"whole_id_{source_image}", f"whole_score_{source_image}_", f"edit_id_{source_image}", f"edit_part_{source_image}", f"edit_part_score_{source_image}_", f"reedit_choice_{source_image}_")
+    for key in list(st.session_state):
+        if any(key == prefix or key.startswith(prefix) for prefix in prefixes):
+            st.session_state.pop(key, None)
+
+
+def set_edit_source(source_image: str, mode: str) -> None:
+    reset_editor_widgets(source_image)
+    st.session_state.edit_source = source_image
+    st.session_state.edit_mode = mode
+
+
+def current_mark_choice(record: dict, item: dict) -> str:
+    if "section" in item:
+        row = next((row for row in st.session_state.item_rows if row["Source Image"] == record["Source Image"] and row["Section"] == item["section"] and str(row["Question"]) == str(item["number"])), None)
+        return (row or {}).get("Marked Answer", "")
+    if "field" in item:
+        value = record.get({"score_part2": "Written_Part2", "score_part3": "Written_Part3", "score_writing": "Writing"}[item["field"]])
+        return "" if value is None else str(value)
+    return ""
+
+
+def set_review_notice(kind: str, message: str) -> None:
+    st.session_state.review_notice = (kind, message)
+
+
+def handoff_results_to_management(result_file: Path) -> int:
+    """通过合并版的本机专用通道交接成绩，不要求用户另存或重新上传。"""
+    endpoint = os.environ.get("RESULTS_BRIDGE_URL", "").strip()
+    token = os.environ.get("RESULTS_BRIDGE_TOKEN", "").strip()
+    if not endpoint or not token:
+        raise RuntimeError("当前不是合并版运行环境，请使用下方 Excel 备份导出。")
+    boundary = f"joy-{uuid.uuid4().hex}"
+    file_bytes = result_file.read_bytes()
+    body = b"".join((
+        f"--{boundary}\r\n".encode(),
+        b'Content-Disposition: form-data; name="file"; filename="grading-handoff.xlsx"\r\n',
+        b"Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n",
+        file_bytes,
+        f"\r\n--{boundary}--\r\n".encode(),
+    ))
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "X-Joy-Desktop-Token": token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = "\n".join(filter(None, [payload.get("error", ""), *(payload.get("issues") or [])]))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            detail = f"结果管理服务返回错误 {exc.code}"
+        raise RuntimeError(detail or "成绩交接失败。") from exc
+    except OSError as exc:
+        raise RuntimeError(f"无法连接结果管理服务：{exc}") from exc
+    return int(payload.get("count", 0))
+
+
+def save_exam_id_review(source_image: str, students: dict) -> None:
+    """在按钮回调中完成保存。
+
+    Streamlit 点击按钮本身就会重跑一次；回调先写入状态，可避免之前再调用
+    st.rerun() 造成的第二次闪烁。
+    """
+    record = find_record(source_image)
+    if record is None:
+        set_review_notice("error", "未找到需要修正的答题卡记录。")
+        return
+    reviewer = ensure_reviewer()
+    normalized_id = str(st.session_state.get(f"id_{source_image}", "")).strip()
+    before_id = record.get("Exam ID")
+    entry = None
+    if len(normalized_id) == 6 and normalized_id.isdigit() and normalized_id in students:
+        entry = append_audit(
+            record, change_type="修正考号", target="Exam ID",
+            original_value=before_id, corrected_value=normalized_id,
+        )
+    valid, message = apply_exam_id(
+        record, st.session_state.item_rows, normalized_id, students,
+        operator=reviewer,
+        review_basis=st.session_state.review_basis,
+        changed_at=entry["Changed At"] if entry else "",
+    )
+    if not valid:
+        set_review_notice("error", message)
+        return
+    refresh_status(record, students)
+    st.session_state.exports = None
+    persist_current_session()
+    set_review_notice("success", f"考号 {normalized_id} 已修正并保存。")
+
+
+def save_mark_review(source_image: str, item_key: str, students: dict, choice_widget_key: str | None = None) -> None:
+    """保存单题人工修正，只使用按钮自带的一次重跑。"""
+    record = find_record(source_image)
+    item = next(
+        (candidate for candidate in st.session_state.issues.get(source_image, []) if candidate.get("key") == item_key),
+        None,
+    )
+    if record is None or item is None:
+        set_review_notice("error", "未找到需要保存的复核项目，请重新打开本卷。")
+        return
+    widget_key = choice_widget_key or f"choice_{source_image}_{item_key}"
+    selected = str(st.session_state.get(widget_key, "空白"))
+    reviewer = ensure_reviewer()
+    before_value = current_mark_choice(record, item) or "空白"
+    if item.get("kind") == "grader_score":
+        score_column = {"score_part2": "Written_Part2", "score_part3": "Written_Part3"}.get(item.get("field"))
+        if score_column and record.get("Score Entry States", {}).get(score_column) in {"BLANK", "AMBIGUOUS"}:
+            before_value = "教师登分区未成功读取"
+    entry = append_audit(
+        record,
+        change_type="确认教师登分" if item.get("kind") == "grader_score" else "修正填涂",
+        target=item["title"],
+        original_value=before_value, corrected_value=selected,
+    )
+    apply_mark(
+        record, st.session_state.item_rows, item, None if selected == "空白" else selected,
+        operator=reviewer,
+        review_basis=st.session_state.review_basis,
+        changed_at=entry["Changed At"],
+    )
+    st.session_state.resolved.add(issue_key(source_image, item["key"]))
+    # 已保存的题目在当前操作会话中保留原位，避免页面高度突变导致滚动跳动。
+    st.session_state.stable_review_sources.add(source_image)
+    refresh_status(record, students)
+    st.session_state.exports = None
+    persist_current_session()
+    set_review_notice("success", f"{item['title']} 修正已保存。")
+
+
+def show_whole_card(record: dict) -> None:
+    source_path = Path(record["Source Path"])
+    card_image = cached_answer_card_preview(str(source_path), _source_version(source_path))
+    if card_image is not None:
+        st.image(card_image, caption="原始整张答题卡", width="stretch")
+    else:
+        st.warning("无法读取原始答题卡图片。")
+
+
+def render_modify_panel(record: dict, students: dict) -> None:
+    source = record["Source Image"]
+    st.subheader("重新修改该卷")
+    show_source_file_name(record, f"open_edit_source_{source}")
+    st.write(f"Exam ID：`{record.get('Exam ID', '')}`　中文名：{record.get('Chinese Name', '')}　分校：{record.get('Branch', '')}")
+    st.metric("Total", record.get("Total", 0))
+    with st.expander("查看整张原图", expanded=False):
+        show_whole_card(record)
+
+    st.markdown("#### 修正识别结果")
+    with st.expander("修改 Exam ID", expanded=False):
+        entered_id = st.text_input("正确的 6 位 Exam ID", value=str(record.get("Exam ID", "")) if str(record.get("Exam ID", "")).isdigit() else "", max_chars=6, key=f"edit_id_{source}").strip()
+        student = students.get(entered_id) if len(entered_id) == 6 and entered_id.isdigit() else None
+        if entered_id:
+            if student is None:
+                st.error("该 Exam ID 不在当前 Students List 中。")
+            else:
+                st.caption(f"中文名：{student['Chinese Name']}　年级：{student['Year Level']}　分校：{student['Branch']}　班级：{student['Class']}　笔试时间：{student['Exam Session']}")
+        if st.button("保存 Exam ID 修改", disabled=student is None, key=f"save_edit_id_{source}"):
+            ensure_reviewer()
+            if entered_id == record.get("Exam ID"):
+                st.info("Exam ID 未发生变化。")
+            else:
+                entry = append_audit(
+                    record, change_type="修正考号", target="Exam ID",
+                    original_value=record.get("Exam ID"), corrected_value=entered_id,
+                )
+                valid, message = apply_exam_id(
+                    record, st.session_state.item_rows, entered_id, students,
+                    operator=st.session_state.reviewer,
+                    review_basis=st.session_state.review_basis,
+                    changed_at=entry["Changed At"],
+                )
+                if valid:
+                    refresh_status(record, students)
+                    st.session_state.exports = None
+                    persist_current_session()
+                    st.success("Exam ID 已重新保存。")
+                    st.rerun()
+                else:
+                    st.error(message)
+
+    with st.expander("修改 Part 得分", expanded=False):
+        part_by_column = {column: (label, maximum) for label, column, maximum in MANUAL_SCORE_PARTS}
+        selected_column = st.selectbox("选择 Part", list(part_by_column), format_func=lambda column: part_by_column[column][0], key=f"edit_part_{source}")
+        label, maximum = part_by_column[selected_column]
+        new_value = int(st.number_input(f"{label} 得分", min_value=0, max_value=maximum, value=int(record.get(selected_column) or 0), step=1, key=f"edit_part_score_{source}_{selected_column}"))
+        if st.button("保存 Part 得分", key=f"save_part_{source}"):
+            ensure_reviewer()
+            old_value = record.get(selected_column) or 0
+            if new_value == old_value:
+                st.info("Part 得分未发生变化。")
+            else:
+                entry = append_audit(
+                    record, change_type="修正填涂分数", target=label,
+                    original_value=old_value, corrected_value=new_value,
+                )
+                apply_part_score(
+                    record, st.session_state.item_rows, selected_column, new_value,
+                    operator=st.session_state.reviewer,
+                    review_basis=st.session_state.review_basis,
+                    changed_at=entry["Changed At"],
+                )
+                refresh_status(record, students)
+                st.session_state.exports = None
+                persist_current_session()
+                st.success("Part 得分已重新保存。")
+                st.rerun()
+
+    editable_issues = [item for item in st.session_state.issues.get(source, []) if item.get("kind") != "part_empty" and item["key"] != "image"]
+    with st.expander("修改已人工确认的填涂", expanded=False):
+        if not editable_issues:
+            st.info("该卷没有可重新修改的 CHECK_MARK 填涂项。")
+        for item in editable_issues:
+            current = current_mark_choice(record, item)
+            options = ["空白", *item["choices"]]
+            selected = st.radio(item["title"], options, horizontal=True, index=options.index(current) if current in options else 0, key=f"reedit_choice_{source}_{item['key']}")
+            if st.button(f"保存 {item['title']} 修改", key=f"reedit_save_{source}_{item['key']}"):
+                ensure_reviewer()
+                before_value = current or "空白"
+                after_value = selected
+                entry = append_audit(
+                    record, change_type="修正填涂", target=item["title"],
+                    original_value=before_value, corrected_value=after_value,
+                )
+                apply_mark(
+                    record, st.session_state.item_rows, item, None if selected == "空白" else selected,
+                    operator=st.session_state.reviewer,
+                    review_basis=st.session_state.review_basis,
+                    changed_at=entry["Changed At"],
+                )
+                st.session_state.resolved.add(issue_key(source, item["key"]))
+                refresh_status(record, students)
+                st.session_state.exports = None
+                persist_current_session()
+                st.success(f"{item['title']} 已重新保存。")
+                st.rerun()
+
+    if st.button("关闭重新修改", key=f"close_edit_{source}"):
+        st.session_state.edit_source = None
+        st.session_state.edit_mode = None
+        st.rerun()
+
+
+initialize()
+render_display_controls()
+ensure_runtime_config()
+if st.session_state.view == "setup":
+    render_exam_setup()
+    st.stop()
+
+files = required_files()
+try:
+    setup_template = load_template()
+except Exception as exc:
+    st.error(f"答题卡模板无法载入：{exc}")
+    st.stop()
+missing = [label for label, path in files.items() if not path.is_file()]
+
+if st.button("返回本次考试设置", key="back_to_exam_setup"):
+    st.session_state.view = "setup"
+    st.rerun()
+
+st.subheader("系统状态")
+if missing:
+    st.error("缺少必要文件：" + "、".join(missing) + "。请恢复 config/ 中的文件后再开始扫描。")
+    st.stop()
+try:
+    students = load_students()
+    template = load_template()
+except Exception as exc:
+    st.error(f"配置文件无法载入：{exc}")
+    st.stop()
+status_columns = st.columns(4)
+status_columns[0].metric("学生名单", files["学生名单"].name)
+status_columns[1].metric("名单人数", len(students))
+status_columns[2].metric("答题卡模板", "已载入")
+status_columns[3].metric("标准答案", "已载入")
+
+st.subheader("选择照片目录")
+directory_col, chooser_col = st.columns([5, 1])
+with directory_col:
+    folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="例如：/Users/你的用户名/Desktop/8月23日定位测照片")
+with chooser_col:
+    st.write("")
+    if st.button("选择文件夹", width="stretch"):
+        selected = choose_macos_folder()
+        if selected:
+            st.session_state.folder = selected
+            st.rerun()
+folder = Path(folder_text).expanduser() if folder_text else None
+if folder_text != st.session_state.folder:
+    st.session_state.folder = folder_text
+if folder and folder.is_dir():
+    images = image_paths(folder)
+    st.caption(f"已选择：{folder}；发现 {len(images)} 张可处理图片（jpg / jpeg / png / heic）。")
+else:
+    images = []
+    if folder_text:
+        st.warning("该目录不存在或无法访问。")
+
+# 同一图片目录的复核进度在 App 重启后自动恢复。
+resolved_folder = str(folder.resolve()) if folder and folder.is_dir() else ""
+if resolved_folder and st.session_state.loaded_session_folder != resolved_folder and not st.session_state.records:
+    saved_session = load_review_session(folder)
+    st.session_state.loaded_session_folder = resolved_folder
+    if saved_session:
+        st.session_state.records = saved_session["records"]
+        st.session_state.item_rows = saved_session["item_rows"]
+        st.session_state.audit_log = saved_session["audit_log"]
+        st.session_state.resolved = saved_session["resolved"]
+        st.session_state.confirmed_warnings = saved_session["confirmed_warnings"]
+        st.session_state.reviewer = saved_session.get("reviewer", "") or st.session_state.reviewer
+        st.session_state.issues = {}
+        for record in st.session_state.records:
+            source_path = folder / str(record.get("Source Image", ""))
+            record["Source Path"] = str(source_path.resolve())
+            if source_path.is_file():
+                issues = prepare_mark_review(record, source_path, template)
+                if issues:
+                    st.session_state.issues[record["Source Image"]] = issues
+            refresh_status(record, students)
+        st.info(f"已恢复上次进度：{len(st.session_state.records)} 张答题卡，{len(st.session_state.audit_log)} 条人工复核记录。")
+
+st.subheader("开始扫描")
+scan_button_label = "重新识别全部图片（清空当前复核进度）" if st.session_state.records else "开始识别"
+if st.button(scan_button_label, type="primary", disabled=not images):
+    st.session_state.records, st.session_state.item_rows, st.session_state.issues, st.session_state.resolved, st.session_state.confirmed_warnings = [], [], {}, set(), set()
+    st.session_state.audit_log = []
+    st.session_state.part_expand_notices = {}
+    st.session_state.stable_review_sources = set()
+    st.session_state.edit_source, st.session_state.edit_mode = None, None
+    progress = st.progress(0, text="正在准备扫描…")
+    for index, path in enumerate(images, 1):
+        progress.progress(index / len(images), text=f"正在处理 {index} / {len(images)}：{path.name}")
+        record, item_rows = scan_one(path, template, students)
+        st.session_state.records.append(record)
+        st.session_state.item_rows.extend(item_rows)
+        issues = prepare_mark_review(record, path, template)
+        if issues:
+            st.session_state.issues[path.name] = issues
+            record["Low Answer Warning"] = low_answer_warning(record, item_rows, issues)
+    for record in st.session_state.records:
+        refresh_status(record, students)
+    st.session_state.exports = None
+    persist_current_session()
+    progress.progress(1.0, text="扫描完成")
+
+if st.session_state.records:
+    records = st.session_state.records
+    install_review_scroll_lock()
+    # 本系统只处理答题卡图片复核。纸质原卷是导出后的独立后续流程，
+    # 不应在扫描工作台中作为二选一的核查依据。
+    st.session_state.review_basis = "答题卡图片"
+    ok = sum(record["Status"] == "OK" for record in records)
+    st.success(f"总照片：{len(records)}　识别成功：{ok}　需要检查：{len(records) - ok}")
+    with st.container(border=True):
+        st.warning("⚠️ 开始人工复核前，请先确认操作人。姓名将写入每一条修正记录。")
+        st.markdown("### 👤 本次复核操作人")
+        st.text_input(
+            "操作人姓名（请务必确认）",
+            key="reviewer",
+            placeholder="请输入实际复核人姓名",
+        )
+        st.caption("当前阶段固定为“答题卡图片复核”。纸质原卷的复查名单由导出文件 Sheet3 提供。")
+        if st.session_state.reviewer.strip():
+            st.success(f"当前操作人：{st.session_state.reviewer.strip()}（下方所有人工修正都将记录此姓名）")
+        else:
+            st.error(f"尚未填写姓名；如直接修正，系统将记录当前 Mac 账户“{getpass.getuser()}”。")
+    st.subheader("处理结果")
+    st.caption("点击 File Name 可用 Mac“预览”打开对应的原始图片，并可直接编辑后保存。")
+    shown_columns = [column for column in RESULT_COLUMNS if column != SUMMARY_SEPARATOR_COLUMN]
+    shown_columns.extend(("Needs Review", "Review Reason", "Status"))
+    st.dataframe(
+        [{column: record.get(column, "") for column in shown_columns} for record in records],
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "File Name": st.column_config.ButtonColumn(
+                "File Name",
+                type="tertiary",
+                help="点击用 Mac“预览”打开原始图片，可直接编辑并保存。",
+                on_click=open_result_source_image,
+                key="result_source_open",
+            ),
+            "Needs Review": st.column_config.TextColumn("需要人工核对学生试卷"),
+            "Review Reason": st.column_config.TextColumn("异常原因"),
+        },
+    )
+    preview_notice = st.session_state.pop("preview_notice", None)
+    if preview_notice:
+        opened, message = preview_notice
+        (st.success if opened else st.error)(message)
+
+    edit_source = st.session_state.get("edit_source")
+    with st.expander("修改已完成记录（仅用于极少数更正）", expanded=bool(edit_source)):
+        st.caption("已完成的答题卡如发现误修，可在此选中文件后重新修改。")
+        selected_source = st.selectbox("选择答题卡文件", [record["Source Image"] for record in records], key="selected_record_for_edit")
+        if st.button("进入修改", key="open_selected_record"):
+            set_edit_source(selected_source, "modify")
+            st.rerun()
+        if edit_source:
+            edit_record = find_record(edit_source)
+            if edit_record is None:
+                st.warning("需要修改的扫描记录已不存在。")
+                st.session_state.edit_source = None
+                st.session_state.edit_mode = None
+            else:
+                render_modify_panel(edit_record, students)
+
+    st.subheader("人工检查")
+    st.info(f"👤 当前复核操作人：{st.session_state.reviewer.strip() or getpass.getuser()}　｜　答题卡图片复核")
+    review_notice = st.session_state.pop("review_notice", None)
+    if review_notice:
+        notice_kind, notice_message = review_notice
+        {"success": st.success, "info": st.info, "warning": st.warning}.get(notice_kind, st.error)(notice_message)
+    image_rescan_notice = st.session_state.pop("image_rescan_notice", None)
+    if image_rescan_notice:
+        notice_kind, notice_message = image_rescan_notice
+        {"success": st.success, "info": st.info, "warning": st.warning}.get(notice_kind, st.error)(notice_message)
+    watch_pending_image_rescan()
+    # 待检查队列直接展示；不再使用看似无反应的二次入口。
+    st.session_state.show_checks = True
+    if st.session_state.get("show_checks"):
+        check_records = [
+            record for record in records
+            if record["Status"] in {"CHECK_ID", "CHECK_MARK", "CHECK_PART_EMPTY"}
+            or record["Source Image"] in st.session_state.stable_review_sources
+        ]
+        if not check_records:
+            st.info("本批次没有需要人工检查的项目。")
+        for record in check_records:
+            display_status = "已完成" if record["Status"] == "OK" else record["Status"]
+            with st.expander(f"{display_status} · {record['Source Image']}", expanded=True):
+                source_path = Path(record["Source Path"])
+                if record["Status"] == "CHECK_ID":
+                    st.markdown("#### 基础信息")
+                    show_source_file_name(record, f"open_id_source_{record['Source Image']}")
+                    st.write(f"系统识别：`{record['Exam ID']}`")
+                    id_status = "无法匹配 Students List" if "?" not in str(record["Exam ID"]) else "考号无法完整识别"
+                    st.write(f"状态：{id_status}")
+                    st.markdown("#### 图片展示")
+                    id_image = cached_exam_id_crop(
+                        str(source_path), _source_version(source_path), template,
+                    )
+                    if id_image is not None:
+                        st.image(id_image, caption="考号区域", width=650)
+                    else:
+                        st.warning("无法生成考号区域截图；请查看整张答题卡。")
+                    card_image = cached_answer_card_preview(
+                        str(source_path), _source_version(source_path),
+                    )
+                    if card_image is not None:
+                        st.image(card_image, caption="整张答题卡", width=650)
+                    else:
+                        st.warning("无法读取原始答题卡图片。")
+                    st.markdown("#### 输入区域")
+                    recognized_id = str(record.get("Exam ID", ""))
+                    with st.form(f"exam_id_form_{record['Source Image']}", clear_on_submit=False):
+                        correct_id = st.text_input(
+                            "正确的 6 位 Exam ID",
+                            value=recognized_id if len(recognized_id) == 6 and recognized_id.isdigit() else "",
+                            key=f"id_{record['Source Image']}",
+                        )
+                        st.form_submit_button(
+                            "确认考号",
+                            on_click=save_exam_id_review,
+                            args=(record["Source Image"], students),
+                        )
+                    normalized_id = correct_id.strip()
+                    if len(normalized_id) == 6 and normalized_id.isdigit() and normalized_id not in students:
+                        with st.expander("考号识别正确，但原名单漏了该学生", expanded=False):
+                            st.caption("补全后只作为本批阅卷的后补学生，原始名单Excel不会被改写。")
+                            supplement_name = st.text_input("中文名", key=f"supplement_name_{record['Source Image']}")
+                            supplement_grade = st.text_input("年级", key=f"supplement_grade_{record['Source Image']}")
+                            supplement_branch = st.text_input("分校", key=f"supplement_branch_{record['Source Image']}")
+                            supplement_class = st.text_input("班级", key=f"supplement_class_{record['Source Image']}")
+                            supplement_session = st.text_input("笔试时间", key=f"supplement_session_{record['Source Image']}")
+                            supplement_ready = all(value.strip() for value in (
+                                supplement_name, supplement_grade, supplement_branch,
+                                supplement_class, supplement_session,
+                            ))
+                            if st.button("确认为后补学生", disabled=not supplement_ready, key=f"supplement_{record['Source Image']}"):
+                                ensure_reviewer()
+                                student_data = {
+                                    "Chinese Name": supplement_name.strip(),
+                                    "Year Level": supplement_grade.strip(),
+                                    "Branch": supplement_branch.strip(),
+                                    "Class": supplement_class.strip(),
+                                    "Exam Session": supplement_session.strip(),
+                                }
+                                entry = append_audit(
+                                    record, change_type="补全名单外学生", target="学生身份",
+                                    original_value=recognized_id, corrected_value=f"{normalized_id} / {supplement_name.strip()}",
+                                    note="原始名单中无该考号",
+                                )
+                                apply_student_supplement(
+                                    record, st.session_state.item_rows, student_data,
+                                    exam_id=normalized_id,
+                                    operator=st.session_state.reviewer,
+                                    review_basis=st.session_state.review_basis,
+                                    changed_at=entry["Changed At"],
+                                )
+                                refresh_status(record, students)
+                                st.session_state.exports = None
+                                persist_current_session()
+                                st.success("后补学生信息已保存。")
+                                st.rerun()
+                record_issues = st.session_state.issues.get(record["Source Image"], [])
+                unresolved_record_issues = [
+                    item for item in record_issues
+                    if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved
+                ]
+                if (
+                    record["Status"] in {"CHECK_MARK", "CHECK_PART_EMPTY"}
+                    or unresolved_record_issues
+                    or record["Source Image"] in st.session_state.stable_review_sources
+                ):
+                    st.markdown("#### 基础信息")
+                    show_source_file_name(record, f"open_mark_source_{record['Source Image']}")
+                    st.write(f"扫描状态：{record['Scan Result Status']}")
+                    st.markdown("#### 图片展示")
+                    card_image = cached_answer_card_preview(
+                        str(source_path), _source_version(source_path),
+                    )
+                    if card_image is not None:
+                        st.image(card_image, caption="整张答题卡", width=650)
+                    else:
+                        st.warning("无法读取原始答题卡图片。")
+                    issues = record_issues
+                    unresolved = [item for item in issues if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved]
+                    warning = record.get("Low Answer Warning")
+                    if warning and unresolved:
+                        st.warning(
+                            f"疑似异常答题卡\n\n原因：{warning}\n\n"
+                            "请直接使用下方的“确认整 Part 为空”或“逐题检查”处理。"
+                        )
+                    part_expand_notice = st.session_state.part_expand_notices.pop(record["Source Image"], None)
+                    if part_expand_notice:
+                        st.info(part_expand_notice)
+                    if not unresolved and record["Source Image"] not in st.session_state.stable_review_sources:
+                        st.info("该项没有可定位的填涂框；请检查原始照片是否完整。")
+                    display_issues = issues if record["Source Image"] in st.session_state.stable_review_sources else unresolved
+                    for item in display_issues:
+                        item_is_resolved = issue_key(record["Source Image"], item["key"]) in st.session_state.resolved
+                        st.markdown("---")
+                        if item.get("kind") == "part_empty":
+                            st.write(f"Part：{item['title']}")
+                            st.write(f"题目范围：{item['question_range']}")
+                            st.write(f"检测结果：{item['detail']}")
+                            part_col_1, part_col_2 = st.columns(2)
+                            with part_col_1:
+                                if st.button("确认整Part为空", disabled=item_is_resolved, key=f"confirm_part_{record['Source Image']}_{item['section']}"):
+                                    ensure_reviewer()
+                                    entry = append_audit(
+                                        record, change_type="人工确认", target=item["title"],
+                                        original_value="待确认", corrected_value="整Part为空",
+                                    )
+                                    apply_part_empty(
+                                        record, st.session_state.item_rows, item,
+                                        operator=st.session_state.reviewer,
+                                        review_basis=st.session_state.review_basis,
+                                        changed_at=entry["Changed At"],
+                                    )
+                                    st.session_state.resolved.add(issue_key(record["Source Image"], item["key"]))
+                                    st.session_state.stable_review_sources.add(record["Source Image"])
+                                    refresh_status(record, students)
+                                    st.session_state.exports = None
+                                    persist_current_session()
+                                    st.success("已将该 Part 全部记为空白。")
+                                    st.rerun()
+                            with part_col_2:
+                                if st.button("改为逐题检查" if item_is_resolved else "逐题检查", key=f"expand_part_{record['Source Image']}_{item['section']}"):
+                                    item_index = issues.index(item)
+                                    st.session_state.issues[record["Source Image"]] = (
+                                        issues[:item_index] + item["question_issues"] + issues[item_index + 1:]
+                                    )
+                                    st.session_state.resolved.discard(issue_key(record["Source Image"], item["key"]))
+                                    message = f"{item['title']} 已展开为逐题检查项，已在当前答题卡下方按题号显示。"
+                                    st.session_state.part_expand_notices[record["Source Image"]] = message
+                                    refresh_status(record, students)
+                                    persist_current_session()
+                                    st.rerun()
+                            if item_is_resolved:
+                                st.success("该 Part 已确认并保存。")
+                            continue
+                        st.write(f"题号或得分区域：{item['title']}")
+                        st.write(f"当前识别：{item['detail'].replace('当前识别结果：', '')}")
+                        if item["crop"] is not None:
+                            st.image(item["crop"], caption="当前题目局部图", width=500)
+                        if item["key"] == "image":
+                            continue
+                        choices = (["空白"] if item.get("allow_blank", True) else []) + item["choices"]
+                        current_choice = current_mark_choice(record, item)
+                        if not current_choice or current_choice not in choices:
+                            current_choice = choices[0]
+                        choice_index = choices.index(current_choice) if current_choice in choices else 0
+                        choice_widget_key = (
+                            f"saved_choice_{record['Source Image']}_{item['key']}"
+                            if item_is_resolved
+                            else f"choice_{record['Source Image']}_{item['key']}"
+                        )
+                        if item_is_resolved:
+                            st.success(f"✅ 已保存结果：{current_choice}")
+                        with st.form(
+                            key=f"review_form_{record['Source Image']}_{item['key']}",
+                            border=False,
+                        ):
+                            st.radio(
+                                "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
+                                choices,
+                                horizontal=True,
+                                index=choice_index,
+                                key=choice_widget_key,
+                            )
+                            st.form_submit_button(
+                                "修改并重新保存" if item_is_resolved else "保存该项修正",
+                                on_click=save_mark_review,
+                                args=(record["Source Image"], item["key"], students, choice_widget_key),
+                            )
+                    if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
+                        st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
+                        if st.button("完成并收起本张", key=f"hide_completed_{record['Source Image']}"):
+                            st.session_state.stable_review_sources.discard(record["Source Image"])
+                            st.rerun()
+
+    st.subheader("导出最终成绩文件")
+    st.caption("自动保存只保存复核进度，不会生成成绩 Excel，也不会弹出“另存为”。只有点击下方按钮才会导出。")
+    pending_records = [record for record in records if record["Status"] in {"CHECK_ID", "CHECK_MARK", "CHECK_PART_EMPTY"}]
+    blank_part_records = [record for record in records if record.get("Blank Parts")]
+    if pending_records:
+        st.warning(f"仍有 {len(pending_records)} 张答题卡未完成图片复核，完成后才能导出最终成绩。")
+    elif blank_part_records:
+        st.warning(
+            f"本次有 {len(blank_part_records)} 名学生整Part未填涂，建议复查原试卷。"
+            "请在导出成绩单的 Sheet3“需复核名单”中查看。"
+        )
+    bridge_available = bool(
+        os.environ.get("RESULTS_BRIDGE_URL", "").strip()
+        and os.environ.get("RESULTS_BRIDGE_TOKEN", "").strip()
+    )
+    if bridge_available and st.button(
+        "完成阅卷并进入结果管理",
+        type="primary",
+        width="stretch",
+        disabled=bool(pending_records),
+        help="直接使用本批名单和最终成绩进入结果管理，不需要导出或重新上传 Excel。",
+    ):
+        try:
+            with tempfile.TemporaryDirectory(prefix="joy-exam-handoff-") as temp_dir:
+                folder_name = Path(st.session_state.folder).name or "results"
+                result_file, _ = export_results(
+                    records,
+                    st.session_state.item_rows,
+                    output_dir=Path(temp_dir),
+                    export_label=f"{folder_name}_内部交接",
+                    include_items=True,
+                    audit_log=st.session_state.audit_log,
+                )
+                count = handoff_results_to_management(result_file)
+            st.success(f"已将本批 {count} 名学生及最终成绩交接到结果管理。")
+            components.html(
+                """
+                <script>
+                window.parent.postMessage({type: "joy-workflow", target: "results"}, "*");
+                </script>
+                """,
+                height=0,
+            )
+        except (OSError, RuntimeError) as exc:
+            st.error(f"交接失败：{exc}")
+    export_label = "另存 Excel 备份…" if bridge_available else "导出并另存最终成绩…"
+    if st.button(
+        export_label,
+        type="secondary" if bridge_available else "primary",
+        width="stretch",
+        disabled=bool(pending_records),
+    ):
+        try:
+            result_file = save_current_results(records, st.session_state.item_rows, st.session_state.folder, st.session_state.audit_log)
+            folder_name = Path(st.session_state.folder).name or "results"
+            saved_path = save_as_macos(result_file, default_name=f"{folder_name}_最终成绩.xlsx")
+            st.success(f"已生成自动保存文件：\n\n{result_file}\n\n人工另存的默认文件名：{folder_name}_最终成绩.xlsx")
+            if saved_path is not None:
+                st.success(f"已另存为：\n\n{saved_path}")
+        except OSError as exc:
+            st.error(f"保存失败：{exc}")
+    if st.button("清空本次结果 / 开始新一批"):
+        delete_review_session(st.session_state.folder)
+        for key in ("records", "item_rows", "issues", "resolved", "confirmed_warnings", "exports", "show_checks", "edit_source", "edit_mode", "part_expand_notices", "stable_review_sources", "pending_image_rescan", "image_rescan_notice"):
+            st.session_state.pop(key, None)
+        st.session_state.audit_log = []
+        st.session_state.loaded_session_folder = ""
+        st.rerun()

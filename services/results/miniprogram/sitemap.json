@@ -1,0 +1,4 @@
+{
+  "desc": "学生结果不允许索引",
+  "rules": [{ "action": "disallow", "page": "*" }]
+}

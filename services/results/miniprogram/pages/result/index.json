@@ -1,0 +1,4 @@
+{
+  "navigationBarTitleText": "六维评价",
+  "usingComponents": { "radar-chart": "/components/radar/index" }
+}

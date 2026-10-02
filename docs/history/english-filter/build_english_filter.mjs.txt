@@ -1,0 +1,121 @@
+import fs from 'node:fs/promises';
+import { FileBlob, SpreadsheetFile } from '@oai/artifact-tool';
+
+const inputPath = '/Users/contiference/Desktop/学业水平统考-英语成绩.xlsx';
+const outputDir = new URL('./outputs/english_filter_20260912', import.meta.url).pathname;
+const stagedPath = `${outputDir}/学业水平统考-英语成绩.xlsx`;
+await fs.mkdir(outputDir, { recursive: true });
+
+const input = await FileBlob.load(inputPath);
+const wb = await SpreadsheetFile.importXlsx(input);
+const grades = wb.worksheets.getItem('成绩');
+
+const source = grades.getRange('A1:U1000').values;
+const headers = source[0].slice(0, 21);
+const itemIndexes = Array.from({ length: 11 }, (_, i) => 6 + i); // G:Q, all non-composition individual items
+
+const numericValue = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+  return null;
+};
+const isBlank = (value) => value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+
+const selected = [];
+for (let i = 1; i < source.length; i++) {
+  const row = source[i].slice(0, 21);
+  if (isBlank(row[0])) continue;
+
+  const writing = numericValue(row[17]);
+  const total = numericValue(row[20]);
+  const writingZero = writing !== null && writing === 0;
+  const zeroItems = itemIndexes.filter((idx) => {
+    const value = numericValue(row[idx]);
+    return value !== null && value === 0;
+  });
+  const lowTotal = total !== null && total < 40;
+  if (!writingZero && zeroItems.length === 0 && !lowTotal) continue;
+
+  const reasons = [];
+  if (writingZero) reasons.push('作文为0');
+  if (zeroItems.length > 0) reasons.push(`其他单项为0：${zeroItems.map((idx) => headers[idx]).join('、')}`);
+  if (lowTotal) reasons.push('总分<40');
+  selected.push([...row, reasons.join('；')]);
+}
+
+const existingSheetNames = (await wb.inspect({ kind: 'sheet', include: 'name' })).ndjson;
+if (existingSheetNames.includes('英语筛选名单')) {
+  throw new Error('工作簿中已存在“英语筛选名单”，为避免覆盖未自动重建。');
+}
+
+const out = wb.worksheets.add('英语筛选名单');
+out.showGridLines = false;
+out.getRange('A1:V1').values = [[...headers, '筛选原因']];
+if (selected.length > 0) out.getRange(`A2:V${selected.length + 1}`).values = selected;
+
+// Match the source sheet's simple table conventions while keeping the new list easy to review.
+out.getRange('A1:V1').format = {
+  fill: '#595959',
+  font: { name: 'Arial', size: 10, bold: true, color: '#FFFFFF' },
+  horizontalAlignment: 'center',
+  verticalAlignment: 'center',
+  wrapText: false,
+};
+out.getRange(`A2:V${selected.length + 1}`).format = {
+  font: { name: 'Arial', size: 10, color: '#222222' },
+  verticalAlignment: 'center',
+  wrapText: false,
+};
+out.getRange(`A1:V${selected.length + 1}`).format.borders = {
+  insideHorizontal: { style: 'thin', color: '#D9D9D9' },
+  insideVertical: { style: 'thin', color: '#D9D9D9' },
+  top: { style: 'thin', color: '#A6A6A6' },
+  bottom: { style: 'thin', color: '#A6A6A6' },
+  left: { style: 'thin', color: '#A6A6A6' },
+  right: { style: 'thin', color: '#A6A6A6' },
+};
+out.getRange('A:A').format.columnWidth = 12;
+// Keep six-digit exam identifiers readable even when a source row contains a numeric value.
+out.getRange(`A2:A${selected.length + 1}`).setNumberFormat('000000');
+out.getRange('B:B').format.columnWidth = 20;
+out.getRange('C:C').format.columnWidth = 10;
+out.getRange('D:D').format.columnWidth = 16;
+out.getRange('E:E').format.columnWidth = 16;
+out.getRange('F:F').format.columnWidth = 10;
+out.getRange('G:Q').format.columnWidth = 13;
+out.getRange('R:U').format.columnWidth = 13;
+out.getRange('V:V').format.columnWidth = 60;
+out.getRange(`G2:U${selected.length + 1}`).format.numberFormat = '0';
+out.freezePanes.freezeRows(1);
+out.tables.add(`A1:V${selected.length + 1}`, true, 'EnglishExceptionList');
+
+wb.recalculate();
+
+const check = await wb.inspect({
+  kind: 'table',
+  sheetId: '英语筛选名单',
+  range: `A1:V${Math.min(selected.length + 1, 12)}`,
+  include: 'values,formulas',
+  tableMaxRows: 12,
+  tableMaxCols: 22,
+  maxChars: 30000,
+});
+console.log('FILTERED_COUNT', selected.length);
+console.log('OUTPUT_CHECK\n' + check.ndjson);
+const errors = await wb.inspect({
+  kind: 'match',
+  searchTerm: '#REF!|#DIV/0!|#VALUE!|#NAME\\?|#N/A|#NUM!|#NULL!|#SPILL!|#CALC!',
+  options: { useRegex: true, maxResults: 300 },
+  summary: 'final formula error scan',
+});
+console.log('ERROR_SCAN\n' + errors.ndjson);
+
+const topPreview = await wb.render({ sheetName: '英语筛选名单', range: 'A1:V20', scale: 1, format: 'png' });
+await fs.writeFile(`${outputDir}/english_filter_preview_top.png`, new Uint8Array(await topPreview.arrayBuffer()));
+const bottomStart = Math.max(1, selected.length - 12);
+const bottomPreview = await wb.render({ sheetName: '英语筛选名单', range: `A${bottomStart}:V${selected.length + 1}`, scale: 1, format: 'png' });
+await fs.writeFile(`${outputDir}/english_filter_preview_bottom.png`, new Uint8Array(await bottomPreview.arrayBuffer()));
+
+const output = await SpreadsheetFile.exportXlsx(wb);
+await output.save(stagedPath);
+console.log('STAGED_OUTPUT', stagedPath);

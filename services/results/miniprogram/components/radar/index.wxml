@@ -1,0 +1,1 @@
+<canvas type="2d" id="radar" class="radar {{compact ? 'radar-compact' : ''}}" aria-label="六维能力雷达图"/>

@@ -1,0 +1,79 @@
+// Explicit one-time local preparation; never applies a template or changes a roster.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { configSchema, GRADES, type State } from '../lib/domain';
+import {
+  analysisFrom,
+  evaluationFrom,
+  type SavedTemplate,
+  type TemplatePayload,
+} from '../lib/templates';
+import { validateEvaluationRows } from '../lib/evaluation-importer';
+import { providedEvaluationRows } from '../resources/provided-evaluations';
+const base = 'http://localhost:3000/api/admin/';
+const password = readFileSync('.local/admin-login.txt', 'utf8').match(
+  /管理员口令：([^\n]+)/,
+)?.[1];
+assert.ok(password);
+let cookie = '';
+async function call<T>(path: string, payload?: unknown): Promise<T> {
+  const response = await fetch(base + path, {
+    method: payload ? 'POST' : 'GET',
+    headers: {
+      'x-exam-request': '1',
+      cookie,
+      ...(payload ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(payload ? { body: JSON.stringify(payload) } : {}),
+  });
+  assert.equal(response.status, 200, `请求未成功：${path}`);
+  if (path === 'login')
+    cookie = response.headers.get('set-cookie')!.split(';')[0];
+  return response.json() as Promise<T>;
+}
+await call('login', { password });
+try {
+  const before = await call<State>('state'),
+    config = configSchema.parse(before.config);
+  const templates = (await call<{ templates: SavedTemplate[] }>('templates'))
+    .templates;
+  const preview = validateEvaluationRows(providedEvaluationRows, config);
+  // New supplied text template has its own titles and no inherited images from another mode.
+  preview.data.dimensions.forEach((d) =>
+    d.evaluations.forEach((e, i) => {
+      e.title = `${d.name} · ${GRADES[i]}`;
+      e.image = '';
+    }),
+  );
+  const additions: { name: string; payload: TemplatePayload }[] = [
+    {
+      name: '当前试卷 · 初始分析模板',
+      payload: { kind: 'analysis', data: analysisFrom(config) },
+    },
+    {
+      name: '当前已用评价 · 备份模板',
+      payload: { kind: 'evaluation', data: evaluationFrom(config) },
+    },
+    {
+      name: '用户提供评语 · 2026-08-31待核对',
+      payload: { kind: 'evaluation', data: preview.data },
+    },
+  ];
+  for (const item of additions) {
+    if (
+      templates.some(
+        (t) => t.kind === item.payload.kind && t.name === item.name,
+      )
+    )
+      continue;
+    await call('templates', item);
+  }
+  const after = await call<State>('state');
+  assert.deepEqual(after, before, '考试状态变化，请核对并发人工操作');
+  console.log(
+    '已保存初始分析模板、现有评价备份、用户提供的24套待核对评语；当前学生、评价与查询开关未改变。',
+  );
+  console.log(preview.warnings.join('\n'));
+} finally {
+  await call('logout', {});
+}

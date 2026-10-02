@@ -1,0 +1,562 @@
+import Cocoa
+import WebKit
+
+private let appTitle = "佳音考试管理"
+private let host = "127.0.0.1"
+private let launchVersion = String(Int(Date().timeIntervalSince1970))
+private let scannerURL = URL(string: "http://\(host):8510")!
+private let resultsHomeURL = URL(string: "http://\(host):3010/?desktopBuild=\(launchVersion)")!
+private let resultsSessionURL = URL(string: "http://\(host):3010/api/desktop/session")!
+private let serviceURLs = [scannerURL, resultsHomeURL]
+private let desktopBridgeToken = (UUID().uuidString + UUID().uuidString)
+    .replacingOccurrences(of: "-", with: "")
+    .lowercased()
+
+private final class ExportDownloadSession {
+    let folderName: String
+    let createBatchFolder: Bool
+    var destinationDirectory: URL?
+    var isChoosingDestination = false
+    var pendingDownloads: [(String, (URL?) -> Void)] = []
+
+    init(folderName: String, createBatchFolder: Bool) {
+        self.folderName = folderName
+        self.createBatchFolder = createBatchFolder
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
+    private var window: NSWindow!
+    private var webView: WKWebView!
+    private var statusLabel: NSTextField!
+    private var spinner: NSProgressIndicator!
+    private var stageControl: NSSegmentedControl!
+    private var serverProcess: Process?
+    private var ownsServer = false
+    private var isQuitting = false
+    private var exportDownloadSession: ExportDownloadSession?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildMainMenu()
+        buildWindow()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        startOrConnect()
+    }
+
+    private func buildMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(
+            withTitle: "退出\(appTitle)",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        isQuitting = true
+        stopOwnedServer()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        isQuitting = true
+        stopOwnedServer()
+    }
+
+    private func buildWindow() {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.userContentController.add(self, name: "exportSession")
+        configuration.userContentController.add(self, name: "workflow")
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: """
+                window.addEventListener('message', function(event) {
+                  if (event.data && event.data.type === 'joy-workflow') {
+                    window.webkit.messageHandlers.workflow.postMessage(event.data.target || '');
+                  }
+                });
+                """,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 920),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = appTitle
+        window.minSize = NSSize(width: 1080, height: 720)
+        window.center()
+        window.delegate = self
+        let contentView = NSView()
+        contentView.wantsLayer = true
+        window.contentView = contentView
+
+        let stageBar = NSVisualEffectView()
+        stageBar.material = .headerView
+        stageBar.state = .active
+        stageBar.translatesAutoresizingMaskIntoConstraints = false
+
+        stageControl = NSSegmentedControl(labels: ["1  阅卷", "2  结果管理"], trackingMode: .selectOne, target: self, action: #selector(changeStage(_:)))
+        stageControl.selectedSegment = 0
+        stageControl.segmentStyle = .rounded
+        stageControl.isEnabled = false
+        stageControl.translatesAutoresizingMaskIntoConstraints = false
+
+        let copyLabel = NSTextField(labelWithString: "佳音考试管理 · 本机独立数据")
+        copyLabel.textColor = .secondaryLabelColor
+        copyLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        copyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        stageBar.addSubview(stageControl)
+        stageBar.addSubview(copyLabel)
+        contentView.addSubview(stageBar)
+        contentView.addSubview(webView)
+        NSLayoutConstraint.activate([
+            stageBar.topAnchor.constraint(equalTo: contentView.topAnchor),
+            stageBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            stageBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            stageBar.heightAnchor.constraint(equalToConstant: 54),
+            stageControl.centerXAnchor.constraint(equalTo: stageBar.centerXAnchor),
+            stageControl.centerYAnchor.constraint(equalTo: stageBar.centerYAnchor),
+            stageControl.widthAnchor.constraint(equalToConstant: 330),
+            copyLabel.centerYAnchor.constraint(equalTo: stageBar.centerYAnchor),
+            copyLabel.trailingAnchor.constraint(equalTo: stageBar.trailingAnchor, constant: -18),
+            webView.topAnchor.constraint(equalTo: stageBar.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+
+        let loadingPanel = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 340, height: 128))
+        loadingPanel.material = .popover
+        loadingPanel.state = .active
+        loadingPanel.wantsLayer = true
+        loadingPanel.layer?.cornerRadius = 16
+        loadingPanel.translatesAutoresizingMaskIntoConstraints = false
+
+        spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .regular
+        spinner.startAnimation(nil)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+
+        statusLabel = NSTextField(labelWithString: "正在启动本地服务…")
+        statusLabel.font = .systemFont(ofSize: 16, weight: .medium)
+        statusLabel.alignment = .center
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        loadingPanel.addSubview(spinner)
+        loadingPanel.addSubview(statusLabel)
+        webView.addSubview(loadingPanel)
+        NSLayoutConstraint.activate([
+            loadingPanel.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
+            loadingPanel.centerYAnchor.constraint(equalTo: webView.centerYAnchor),
+            loadingPanel.widthAnchor.constraint(equalToConstant: 340),
+            loadingPanel.heightAnchor.constraint(equalToConstant: 128),
+            spinner.centerXAnchor.constraint(equalTo: loadingPanel.centerXAnchor),
+            spinner.topAnchor.constraint(equalTo: loadingPanel.topAnchor, constant: 28),
+            statusLabel.leadingAnchor.constraint(equalTo: loadingPanel.leadingAnchor, constant: 20),
+            statusLabel.trailingAnchor.constraint(equalTo: loadingPanel.trailingAnchor, constant: -20),
+            statusLabel.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 14),
+        ])
+    }
+
+    private func startOrConnect() {
+        checkServers { [weak self] available in
+            guard let self else { return }
+            if available {
+                self.statusLabel.stringValue = "正在打开管理页面…"
+                self.loadSite()
+            } else {
+                self.launchServer()
+            }
+        }
+    }
+
+    private func launchServer() {
+        guard let wrapperURL = Bundle.main.url(forResource: "server-wrapper", withExtension: "sh") else {
+            showFatalError("应用缺少启动文件，请重新生成本地应用。")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [wrapperURL.path]
+        var environment = ProcessInfo.processInfo.environment
+        environment["JOY_DESKTOP_BRIDGE_TOKEN"] = desktopBridgeToken
+        process.environment = environment
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] process in
+            DispatchQueue.main.async {
+                guard let self, !self.isQuitting else { return }
+                self.showFatalError("本地服务已经停止。请关闭应用后重新打开。\n退出状态：\(process.terminationStatus)")
+            }
+        }
+
+        do {
+            try process.run()
+            serverProcess = process
+            ownsServer = true
+            waitForServer(attempt: 0)
+        } catch {
+            showFatalError("无法启动本地服务：\(error.localizedDescription)")
+        }
+    }
+
+    private func waitForServer(attempt: Int) {
+        guard !isQuitting else { return }
+        if attempt >= 120 {
+            showFatalError("本地服务启动超时。请查看应用日志后重试。")
+            return
+        }
+        checkServers { [weak self] available in
+            guard let self else { return }
+            if available {
+                self.statusLabel.stringValue = "正在打开管理页面…"
+                self.loadSite()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    self.waitForServer(attempt: attempt + 1)
+                }
+            }
+        }
+    }
+
+    private func checkServers(completion: @escaping (Bool) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var allAvailable = true
+
+        for url in serviceURLs {
+            group.enter()
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 1
+            URLSession.shared.dataTask(with: request) { _, response, _ in
+                let ok = (response as? HTTPURLResponse).map { (200..<500).contains($0.statusCode) } ?? false
+                lock.lock()
+                allAvailable = allAvailable && ok
+                lock.unlock()
+                group.leave()
+            }.resume()
+        }
+
+        group.notify(queue: .main) { completion(allAvailable) }
+    }
+
+    private func loadSite() {
+        stageControl.isEnabled = true
+        loadStage(index: stageControl.selectedSegment)
+    }
+
+    @objc private func changeStage(_ sender: NSSegmentedControl) {
+        loadStage(index: sender.selectedSegment)
+    }
+
+    private func loadStage(index: Int) {
+        let url = index == 0 ? scannerURL : resultsSessionURL
+        window.title = index == 0 ? "\(appTitle) — 阅卷" : "\(appTitle) — 结果管理"
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 30
+        )
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        if index == 1 {
+            request.setValue(desktopBridgeToken, forHTTPHeaderField: "X-Joy-Desktop-Token")
+        }
+        webView.load(request)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        for view in webView.subviews where view is NSVisualEffectView {
+            view.removeFromSuperview()
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.beginSheetModal(for: window) { response in
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences,
+        decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
+    ) {
+        decisionHandler(
+            navigationAction.shouldPerformDownload ? .download : .allow,
+            preferences
+        )
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        if message.name == "workflow",
+           let target = message.body as? String,
+           target == "results" {
+            stageControl.selectedSegment = 1
+            loadStage(index: 1)
+            return
+        }
+        guard message.name == "exportSession",
+              let body = message.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+
+        switch action {
+        case "begin":
+            let folderName = body["folderName"] as? String ?? "学生成绩报告"
+            let createBatchFolder = body["createBatchFolder"] as? Bool ?? false
+            exportDownloadSession = ExportDownloadSession(
+                folderName: folderName,
+                createBatchFolder: createBatchFolder
+            )
+        case "end":
+            let session = exportDownloadSession
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak session] in
+                guard let self, let session,
+                      self.exportDownloadSession === session,
+                      !session.isChoosingDestination,
+                      session.pendingDownloads.isEmpty else { return }
+                self.exportDownloadSession = nil
+            }
+        default:
+            break
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationResponse: WKNavigationResponse,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        if let session = exportDownloadSession {
+            queueFolderDownload(
+                session: session,
+                suggestedFilename: suggestedFilename,
+                completionHandler: completionHandler
+            )
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedFilename
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { result in
+            completionHandler(result == .OK ? panel.url : nil)
+        }
+    }
+
+    private func queueFolderDownload(
+        session: ExportDownloadSession,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        if let directory = session.destinationDirectory {
+            completionHandler(uniqueFileURL(in: directory, suggestedFilename: suggestedFilename))
+            return
+        }
+
+        session.pendingDownloads.append((suggestedFilename, completionHandler))
+        guard !session.isChoosingDestination else { return }
+        session.isChoosingDestination = true
+
+        let panel = NSOpenPanel()
+        panel.title = "选择报告保存位置"
+        panel.message = session.createBatchFolder
+            ? "系统将在所选位置新建“\(session.folderName)”文件夹，并自动保存本轮全部压缩包。"
+            : "本轮导出的PDF将自动保存到所选文件夹，不再逐个确认。"
+        panel.prompt = "选择此文件夹"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.beginSheetModal(for: window) { [weak self, weak session] result in
+            guard let self, let session else { return }
+            session.isChoosingDestination = false
+            guard result == .OK, let selectedDirectory = panel.url else {
+                self.cancelFolderDownloads(session)
+                return
+            }
+
+            do {
+                let destination: URL
+                if session.createBatchFolder {
+                    destination = self.uniqueDirectoryURL(
+                        in: selectedDirectory,
+                        preferredName: session.folderName
+                    )
+                    try FileManager.default.createDirectory(
+                        at: destination,
+                        withIntermediateDirectories: false
+                    )
+                } else {
+                    destination = selectedDirectory
+                }
+                session.destinationDirectory = destination
+                let pending = session.pendingDownloads
+                session.pendingDownloads.removeAll()
+                for (filename, handler) in pending {
+                    handler(self.uniqueFileURL(in: destination, suggestedFilename: filename))
+                }
+            } catch {
+                self.cancelFolderDownloads(session)
+                self.showDownloadError("无法建立导出文件夹：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func cancelFolderDownloads(_ session: ExportDownloadSession) {
+        let pending = session.pendingDownloads
+        session.pendingDownloads.removeAll()
+        for (_, handler) in pending { handler(nil) }
+        if exportDownloadSession === session { exportDownloadSession = nil }
+        webView.evaluateJavaScript(
+            "window.dispatchEvent(new CustomEvent('desktop-export-cancelled'))"
+        )
+    }
+
+    private func uniqueDirectoryURL(in parent: URL, preferredName: String) -> URL {
+        let safeName = preferredName.replacingOccurrences(of: "/", with: "-")
+        var candidate = parent.appendingPathComponent(safeName, isDirectory: true)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = parent.appendingPathComponent("\(safeName)-\(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private func uniqueFileURL(in directory: URL, suggestedFilename: String) -> URL {
+        let original = directory.appendingPathComponent(suggestedFilename)
+        guard FileManager.default.fileExists(atPath: original.path) else { return original }
+        let fileExtension = original.pathExtension
+        let stem = original.deletingPathExtension().lastPathComponent
+        var suffix = 2
+        var candidate: URL
+        repeat {
+            let name = fileExtension.isEmpty
+                ? "\(stem)-\(suffix)"
+                : "\(stem)-\(suffix).\(fileExtension)"
+            candidate = directory.appendingPathComponent(name)
+            suffix += 1
+        } while FileManager.default.fileExists(atPath: candidate.path)
+        return candidate
+    }
+
+    private func showDownloadError(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "文件保存失败"
+        alert.informativeText = message
+        alert.addButton(withTitle: "知道了")
+        alert.beginSheetModal(for: window)
+    }
+
+    func download(
+        _ download: WKDownload,
+        didFailWithError error: Error,
+        resumeData: Data?
+    ) {
+        guard !isQuitting else { return }
+        showDownloadError(error.localizedDescription)
+    }
+
+    private func stopOwnedServer() {
+        guard ownsServer, let process = serverProcess, process.isRunning else { return }
+        process.terminate()
+        let pid = process.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            if process.isRunning {
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+
+    private func showFatalError(_ message: String) {
+        spinner.stopAnimation(nil)
+        statusLabel.stringValue = "启动失败"
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = appTitle
+        alert.informativeText = message
+        alert.addButton(withTitle: "关闭")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.run()

@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+runtime_data/
+output/
+*.xlsx
+build/
+dist/
+发布/
+*.spec
+!定位测扫描计分 V3.spec

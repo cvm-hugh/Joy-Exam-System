@@ -1,0 +1,43 @@
+{
+  "appid": "wx5b7e8ca5d7111f88",
+  "projectname": "考试结果查询-本地基础版",
+  "description": "原生微信小程序；正式AppID及服务域名待接入",
+  "miniprogramRoot": "./",
+  "compileType": "miniprogram",
+  "setting": {
+    "es6": true,
+    "minified": true,
+    "urlCheck": true,
+    "postcss": false,
+    "compileWorklet": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "enhance": false,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": false,
+    "swc": false,
+    "disableSWC": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "packOptions": {
+    "ignore": [
+      {
+        "value": "README.md",
+        "type": "file"
+      }
+    ],
+    "include": []
+  },
+  "simulatorPluginLibVersion": {},
+  "editorSetting": {}
+}

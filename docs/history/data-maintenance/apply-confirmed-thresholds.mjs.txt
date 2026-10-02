@@ -1,0 +1,112 @@
+// One-off repair for the explicitly confirmed V1 boundaries. Never run on startup.
+import assert from 'node:assert/strict';
+import { readFileSync, chmodSync } from 'node:fs';
+import { DatabaseSync, backup } from 'node:sqlite';
+import { createHash } from 'node:crypto';
+
+assert.equal(
+  process.argv[2],
+  '--apply-confirmed-v1',
+  '需明确指定 --apply-confirmed-v1',
+);
+process.umask(0o077);
+const db = new DatabaseSync(
+  '.wrangler/state/v3/d1/miniflare-D1DatabaseObject/faaf2b0445ab934c3aac48ddf0cdfade8f9bac050be98993748742cdd2cb05fb.sqlite',
+  { readOnly: true },
+);
+const fingerprint = (sql) =>
+  createHash('sha256')
+    .update(JSON.stringify(db.prepare(sql).all()))
+    .digest('hex');
+const rosterSQL = 'SELECT * FROM students ORDER BY exam_no';
+const templatesSQL = 'SELECT * FROM templates ORDER BY id';
+const desired = [
+  { min: 0.8, max: 1, includeMax: true },
+  { min: 0.6, max: 0.8, includeMax: false },
+  { min: 0.4, max: 0.6, includeMax: false },
+  { min: 0, max: 0.4, includeMax: false },
+];
+const legacy = [
+  { min: 0.8, max: 1, includeMax: true },
+  { min: 0.6, max: 0.7, includeMax: true },
+  { min: 0.4, max: 0.5, includeMax: true },
+  { min: 0, max: 0.3, includeMax: true },
+];
+let cookie = '';
+async function call(path, method = 'GET', data) {
+  const response = await fetch(`http://localhost:3000/api/admin/${path}`, {
+    method,
+    headers: {
+      'x-exam-request': '1',
+      'Content-Type': 'application/json',
+      ...(cookie ? { cookie } : {}),
+    },
+    ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+  });
+  assert.ok(response.ok, `${path}返回${response.status}，停止修正`);
+  return response;
+}
+try {
+  const password = readFileSync('.local/admin-login.txt', 'utf8').match(
+    /管理员口令：([^\n]+)/,
+  )?.[1];
+  assert.ok(password, '找不到本地管理员凭据');
+  const login = await call('login', 'POST', { password });
+  cookie = login.headers.get('set-cookie').split(';')[0];
+  const before = await (await call('state')).json();
+  assert.equal(before.published, 'closed', '查询已开放，停止修正');
+  assert.equal(before.config.dimensions.length, 6);
+  assert.ok(
+    before.config.dimensions.every((d) =>
+      [JSON.stringify(legacy), JSON.stringify(desired)].includes(
+        JSON.stringify(d.rules),
+      ),
+    ),
+    '发现新的自定义边界，停止而不覆盖',
+  );
+  const expected = structuredClone(before.config);
+  expected.dimensions.forEach((d) => {
+    d.rules = structuredClone(desired);
+  });
+  expected.thresholdsConfirmed = true;
+  if (JSON.stringify(expected) === JSON.stringify(before.config)) {
+    console.log('当前阈值已与确认分档一致，未重复写入。');
+  } else {
+    const roster = fingerprint(rosterSQL),
+      templates = fingerprint(templatesSQL);
+    const backupPath = `.local/before-confirmed-thresholds-${Date.now()}.sqlite`;
+    await backup(db, backupPath);
+    chmodSync(backupPath, 0o600);
+    await call('thresholds', 'PUT', {
+      revision: before.revision,
+      confirmApply: true,
+      data: {
+        dimensions: expected.dimensions.map((d, i) => ({
+          id: d.id,
+          name: expected.analysis.dimensions[i].name,
+          rules: d.rules,
+        })),
+      },
+    });
+    const after = await (await call('state')).json();
+    assert.deepEqual(
+      after.config,
+      expected,
+      '实际配置与预期不一致，请核对备份',
+    );
+    assert.equal(after.published, before.published);
+    assert.equal(after.count, before.count);
+    assert.equal(fingerprint(rosterSQL), roster, '名单发生变化，请核对');
+    assert.equal(
+      fingerprint(templatesSQL),
+      templates,
+      '模板库发生变化，请核对',
+    );
+    console.log(
+      `已备份并将六维统一为0.8／0.6／0.4完整分档，确认状态为true；${after.count}名学生、模板库及其他配置逐项校验未变。备份：${backupPath}`,
+    );
+  }
+} finally {
+  if (cookie) await call('logout', 'POST');
+  db.close();
+}

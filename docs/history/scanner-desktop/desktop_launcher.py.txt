@@ -1,0 +1,82 @@
+"""macOS App 入口：启动本机 Streamlit，不要求用户打开终端。"""
+from __future__ import annotations
+
+import socket
+import sys
+import os
+import threading
+import time
+from pathlib import Path
+
+
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("DINGWEICE_PORT", "8503"))
+
+
+def _port_is_open() -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        connection.settimeout(0.35)
+        return connection.connect_ex((HOST, PORT)) == 0
+
+
+def _ui_path() -> Path:
+    root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]  # type: ignore[attr-defined]
+    return root / "app" / "scan_ui.py"
+
+
+def _show_window(url: str) -> None:
+    """用 macOS 原生 WKWebView 承载本地页面，绝不唤起默认浏览器。"""
+    import webview
+
+    webview.create_window(
+        "定位测扫描计分 V3",
+        url,
+        width=1440,
+        height=960,
+        min_size=(1080, 720),
+        text_select=True,
+    )
+    webview.start(gui="cocoa", private_mode=True)
+
+
+def _run_streamlit() -> None:
+    """后台启动本机服务；macOS 主线程留给原生窗口。"""
+    from streamlit import config
+    from streamlit import file_util
+    from streamlit.web import bootstrap
+
+    config.set_option("server.address", HOST)
+    config.set_option("server.port", PORT)
+    config.set_option("server.headless", True)
+    config.set_option("global.developmentMode", False)
+    config.set_option("client.toolbarMode", "minimal")
+    config.set_option("browser.gatherUsageStats", False)
+    config.set_option("browser.serverAddress", HOST)
+    config.set_option("browser.serverPort", PORT)
+    if getattr(sys, "frozen", False):
+        static_dir = Path(sys._MEIPASS) / "streamlit" / "static"  # type: ignore[attr-defined]
+        file_util.get_static_dir = lambda: str(static_dir)
+    # Streamlit 默认在主线程注册 macOS 信号处理器；本 App 的主线程必须
+    # 由 Cocoa 占用，因此后台服务无需该默认信号处理器。
+    bootstrap._set_up_signal_handler = lambda server: None
+    bootstrap.run(str(_ui_path()), False, [], {})
+
+
+def main() -> None:
+    url = f"http://{HOST}:{PORT}"
+    if _port_is_open():
+        _show_window(url)
+        return
+    server_thread = threading.Thread(target=_run_streamlit, daemon=True, name="local-scan-server")
+    server_thread.start()
+    # 首次启动时 Streamlit 可能需要扫描组件，给予最长 60 秒的启动窗口。
+    for _ in range(1200):
+        if _port_is_open():
+            _show_window(url)
+            return
+        time.sleep(0.05)
+    raise RuntimeError("本地扫描服务未能启动。")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "单次考试",
+  "type": "object",
+  "required": ["schema_version", "exam_id", "name", "template", "roster_snapshot", "answer_key", "photo_directory"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "exam_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"},
+    "name": {"type": "string", "minLength": 1},
+    "template": {
+      "type": "object",
+      "required": ["template_id", "version"],
+      "properties": {
+        "template_id": {"type": "string"},
+        "version": {"type": "string"}
+      }
+    },
+    "roster_snapshot": {"type": "string", "minLength": 1},
+    "answer_key": {"type": "string", "minLength": 1},
+    "photo_directory": {"type": "string", "minLength": 1},
+    "status": {"enum": ["setup", "ready", "scanning", "review", "exported", "closed"]}
+  }
+}
