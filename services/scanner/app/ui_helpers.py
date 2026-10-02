@@ -245,6 +245,55 @@ def issue_key(source_image: str, item_key: str) -> str:
     return f"{source_image}::{item_key}"
 
 
+def pending_part_questions(
+    record: dict[str, Any], issue: dict[str, Any],
+    item_rows: list[dict[str, Any]], resolved: set[str],
+) -> list[dict[str, Any]]:
+    """筛选整 Part 中仍待确认的题目；显式重开优先于已保存结果。"""
+    source = record["Source Image"]
+    section = issue["section"]
+    score_column = "_".join(value.capitalize() for value in section.split("_"))
+    confirmed_part = (
+        section in record.get("Reviewed Blank Sections", [])
+        or score_column in record.get("Manual Score Overrides", {})
+    )
+    confirmed_questions = {
+        str(row.get("Question")) for row in item_rows
+        if row.get("Source Image") == source and row.get("Section") == section
+        and row.get("Manual Correction") == "是"
+    }
+    reopened_keys = set(record.get("Reopened Review Questions", []))
+    return [
+        question for question in issue["question_issues"]
+        if question["key"] in reopened_keys or (
+            not confirmed_part
+            and str(question["number"]) not in confirmed_questions
+            and issue_key(source, question["key"]) not in resolved
+        )
+    ]
+
+
+def synchronize_part_review(
+    record: dict[str, Any], issues: list[dict[str, Any]],
+    item_rows: list[dict[str, Any]], resolved: set[str],
+) -> list[dict[str, Any]]:
+    """清理当前队列中的过期整 Part 候选，保留已保存表单和输入对象。"""
+    synchronized: list[dict[str, Any]] = []
+    changed = False
+    for item in issues:
+        if item.get("kind") != "part_empty" or issue_key(record["Source Image"], item["key"]) in resolved:
+            synchronized.append(item)
+            continue
+        pending = pending_part_questions(record, item, item_rows, resolved)
+        if len(pending) == len(item["question_issues"]) and item["section"] not in record.get("Expanded Review Sections", []):
+            synchronized.append(item)
+        else:
+            # 已确认题目不能再参与“整段空白”的判定；部分完成时仅保留未完成单题。
+            synchronized.extend(pending)
+            changed = True
+    return synchronized if changed else issues
+
+
 def recalculate_record(record: dict[str, Any], item_rows: list[dict[str, Any]]) -> None:
     relevant = [row for row in item_rows if row["Source Image"] == record["Source Image"]]
     correct_by_section: dict[str, int] = {}

@@ -36,8 +36,10 @@ from app.ui_helpers import (answer_card_preview, apply_exam_id,
                             apply_mark, apply_part_empty,
                             apply_student_supplement, choose_macos_folder,
                             exam_id_crop, image_paths, issue_key, low_answer_warning,
-                            open_original_in_preview, prepare_mark_review, required_files,
-                            save_as_macos, save_current_results, scan_one)
+                            open_original_in_preview, pending_part_questions,
+                            prepare_mark_review, required_files,
+                            save_as_macos, save_current_results, scan_one,
+                            synchronize_part_review)
 
 st.set_page_config(page_title="佳音考试管理 · 阅卷", layout="wide")
 st.title("佳音考试管理 · 阅卷")
@@ -333,6 +335,18 @@ def render_exam_setup() -> None:
         st.rerun()
 
 
+def synchronize_record_issues(record: dict) -> bool:
+    """只同步待审核队列；发生变化时使旧导出缓存失效。"""
+    source = record["Source Image"]
+    current_issues = st.session_state.issues.get(source, [])
+    synchronized = synchronize_part_review(record, current_issues, st.session_state.item_rows, st.session_state.resolved)
+    if synchronized is current_issues:
+        return False
+    st.session_state.issues[source] = synchronized
+    st.session_state.exports = None
+    return True
+
+
 def refresh_status(record: dict, students: dict) -> None:
     update_review_flag(record, st.session_state.item_rows)
     if record.get("Manual Override"):
@@ -340,6 +354,7 @@ def refresh_status(record: dict, students: dict) -> None:
         record["Low Answer Warning"] = None
         return
     source = record["Source Image"]
+    synchronize_record_issues(record)
     pending = [item for item in st.session_state.issues.get(source, []) if issue_key(source, item["key"]) not in st.session_state.resolved]
     record["Low Answer Warning"] = low_answer_warning(record, st.session_state.item_rows, pending)
     if (record["Exam ID"] not in students and not record.get("Identity Confirmed")) or "?" in str(record["Exam ID"]):
@@ -832,6 +847,10 @@ if st.button(scan_button_label, type="primary", disabled=not images):
 def render_review_workspace(students: dict, template: dict) -> None:
     """Update review, scores and export controls together without rerunning setup."""
     records = st.session_state.records
+    # 当前会话也可能保留旧整 Part 候选，不能只在恢复进度时清理。
+    for record in records:
+        if synchronize_record_issues(record):
+            refresh_status(record, students)
     install_review_scroll_lock(st.session_state.get("review_navigation"))
     # 本系统只处理答题卡图片复核。纸质原卷是导出后的独立后续流程，
     # 不应在扫描工作台中作为二选一的核查依据。
@@ -928,9 +947,14 @@ def render_review_workspace(students: dict, template: dict) -> None:
                     unresolved = [item for item in issues if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved]
                     warning = record.get("Low Answer Warning")
                     if warning and unresolved:
+                        instructions = (
+                            "请直接使用下方的“确认整 Part 为空”或“逐题检查”处理。"
+                            if any(item.get("kind") == "part_empty" for item in unresolved)
+                            else "请检查下方尚未确认的题目并保存结果。"
+                        )
                         st.warning(
                             f"疑似异常答题卡\n\n原因：{warning}\n\n"
-                            "请直接使用下方的“确认整 Part 为空”或“逐题检查”处理。"
+                            f"{instructions}"
                         )
                     part_expand_notice = st.session_state.part_expand_notices.pop(record["Source Image"], None)
                     if part_expand_notice:
@@ -976,14 +1000,25 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                         record["Reopened Review Questions"] = sorted(set(record.get("Reopened Review Questions", [])) | question_keys)
                                         for question_key in question_keys:
                                             st.session_state.resolved.discard(issue_key(record["Source Image"], question_key))
+                                    pending_questions = pending_part_questions(
+                                        record, item, st.session_state.item_rows, st.session_state.resolved,
+                                    )
                                     item_index = issues.index(item)
                                     st.session_state.issues[record["Source Image"]] = (
-                                        issues[:item_index] + item["question_issues"] + issues[item_index + 1:]
+                                        issues[:item_index] + pending_questions + issues[item_index + 1:]
                                     )
                                     st.session_state.resolved.discard(issue_key(record["Source Image"], item["key"]))
-                                    message = f"{item['title']} 已展开为逐题检查项，已在当前答题卡下方按题号显示。"
+                                    if pending_questions:
+                                        message = f"{item['title']} 已展开 {len(pending_questions)} 道待检查题目，已在当前答题卡下方按题号显示。"
+                                        saved_count = len(item["question_issues"]) - len(pending_questions)
+                                        if saved_count:
+                                            message += f"其余 {saved_count} 道题已保存人工结果，无需重复确认。"
+                                    else:
+                                        st.session_state.stable_review_sources.add(record["Source Image"])
+                                        message = f"{item['title']} 的题目已全部确认，已保留保存结果并清除过期空白提示。"
                                     st.session_state.part_expand_notices[record["Source Image"]] = message
                                     refresh_status(record, students)
+                                    st.session_state.exports = None
                                     persist_current_session()
                                     st.rerun()
                             if item_is_resolved:
