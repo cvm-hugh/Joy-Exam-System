@@ -10,26 +10,57 @@
     doc.removeEventListener('pointerdown', win.__dingweiceReviewScrollCapture, true);
     delete win.__dingweiceReviewScrollCapture;
   }
-  const controller = {pending, frame: 0};
+  const controller = {
+    pending, frame: 0,
+    navigation: previous?.navigation || null,
+    handledToken: previous?.handledToken || '',
+  };
   const submitLabels = new Set(['保存该项修正', '修改并重新保存']);
   const cancel = () => {
     controller.pending = null;
+    controller.navigation = null;
     win.cancelAnimationFrame(controller.frame);
     controller.frame = 0;
   };
   const restore = () => {
     controller.frame = 0;
-    const saved = controller.pending;
+    const saved = controller.navigation || controller.pending;
     if (!saved || Date.now() > saved.expires) return cancel();
-    const form = doc.getElementsByClassName(saved.formClass)[0];
+    const form = doc.getElementsByClassName(saved.targetClass || saved.formClass)[0];
     const scroller = doc.querySelector('[data-testid="stMain"]') || doc.scrollingElement;
-    // Wait for a temporarily unmounted form to return; never jump to the page top.
+    // Wait for the requested element to mount before changing the scroll position.
     if (form && scroller) {
+      const summary = controller.navigation ? form.querySelector('summary') : null;
+      const details = summary?.closest('details');
+      if (details && !details.open) summary.click();
       const delta = form.getBoundingClientRect().top - saved.top;
       if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
+      if (controller.navigation && !saved.focused) {
+        const heading = form.querySelector('summary, h1, h2, h3, h4');
+        if (heading) {
+          if (heading.tagName !== 'SUMMARY') heading.setAttribute('tabindex', '-1');
+          heading.focus({preventScroll: true});
+          saved.focused = true;
+        }
+      }
     }
     controller.frame = win.requestAnimationFrame(restore);
   };
+  const readNavigation = () => {
+    const request = doc.getElementById('joy-review-navigation');
+    const token = request?.dataset.token;
+    const targetClass = request?.dataset.target;
+    if (!token || !targetClass || token === controller.handledToken) return;
+    controller.handledToken = token;
+    controller.pending = null;
+    controller.navigation = {targetClass, top: 84, expires: Date.now() + 5000};
+    if (!controller.frame) controller.frame = win.requestAnimationFrame(restore);
+  };
+  // The requested card can exist at its old position before the fragment finishes
+  // replacing the list. Keep tracking its new position, including delayed images.
+  const observer = new win.MutationObserver(readNavigation);
+  observer.observe(doc.body, {childList: true, subtree: true, attributes: true,
+                             attributeFilter: ['data-target', 'data-token']});
   const capture = (event) => {
     const target = event.target instanceof win.Element ? event.target : null;
     const button = target?.closest('button');
@@ -49,6 +80,7 @@
       form = form.parentElement;
     }
     if (!formClass) return cancel();
+    controller.navigation = null;
     controller.pending = {formClass, top: form.getBoundingClientRect().top, expires: Date.now() + 5000};
     if (!controller.frame) controller.frame = win.requestAnimationFrame(restore);
   };
@@ -58,10 +90,14 @@
   ];
   for (const [type, handler] of listeners) doc.addEventListener(type, handler, {capture: true, passive: true});
   controller.dispose = () => {
+    observer.disconnect();
     win.cancelAnimationFrame(controller.frame);
     for (const [type, handler] of listeners) doc.removeEventListener(type, handler, true);
   };
   win.__joyReviewScroll = controller;
-  if (controller.pending) controller.frame = win.requestAnimationFrame(restore);
+  readNavigation();
+  if ((controller.pending || controller.navigation) && !controller.frame) {
+    controller.frame = win.requestAnimationFrame(restore);
+  }
 })();
 </script></body></html>

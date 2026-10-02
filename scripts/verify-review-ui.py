@@ -82,6 +82,26 @@ if 'synthetic_ready' not in st.session_state:
         items, issues = [], []
     st.session_state.update(synthetic_ready=True, view='scan', records=[record], item_rows=items,
         issues={image: issues}, folder=str(PHOTOS), loaded_session_folder=str(PHOTOS), reviewer='测试复核人')
+    if scenario == 'navigation':
+        from shutil import copy2
+        import copy
+        records, item_rows, all_issues, stable = [], [], {}, set()
+        for source_image, status in [('先前已完成.png', 'OK'), ('未复核 01（考号待确认）.png', 'CHECK_ID'),
+                                     ('已完成 02.png', 'OK'), ('未复核 03（答题待确认）.png', 'CHECK_MARK')]:
+            copy2(PHOTOS / image, PHOTOS / source_image)
+            card = copy.deepcopy(record)
+            card.update({'Source Image': source_image, 'Source Path': str(PHOTOS / source_image),
+                         'File Name': source_image, 'Status': status,
+                         'Exam ID': '00?086' if status == 'CHECK_ID' else '001001',
+                         'Identity Issue': '考号识别异常' if status == 'CHECK_ID' else ''})
+            records.append(card)
+            if status == 'OK':
+                stable.add(source_image)
+                all_issues[source_image] = []
+            else:
+                all_issues[source_image] = copy.deepcopy(issues)
+                item_rows.extend({**row, 'Source Image': source_image, 'Exam ID': card['Exam ID']} for row in items)
+        st.session_state.update(records=records, item_rows=item_rows, issues=all_issues, stable_review_sources=stable)
 source = ROOT / 'services/scanner/app/scan_ui.py'
 st.session_state.synthetic_full_runs = st.session_state.get('synthetic_full_runs', 0) + 1
 exec(compile(source.read_text(), str(source), 'exec'), {'__file__': str(source), '__name__': '__main__'})
@@ -102,6 +122,11 @@ st.caption(f"Full app runs: {st.session_state.synthetic_full_runs}")
                     time.sleep(0.25)
             runs = [('marks', zoom) for zoom in sys.argv[1:] or ['75', '100', '110']]
             runs.extend((scenario, '100') for scenario in ('known-s', 'known-numeric', 'missing', 'id-only'))
+            runs.extend(('navigation', zoom) for zoom in sys.argv[1:] or ['75', '100', '110'])
+            selected = set(filter(None, os.environ.get('JOY_TEST_SCENARIOS', '').split(',')))
+            if selected:
+                runs = [(scenario, zoom) for scenario, zoom in runs if scenario in selected]
+                assert runs, 'No matching review scenarios selected.'
             for scenario, zoom in runs:
                 print(f'Verifying {scenario} review UI at {zoom}% zoom...', flush=True)
                 browser_env = {**os.environ, 'JOY_TEST_ZOOM': zoom, 'JOY_IDENTITY_SCENARIO': scenario}
@@ -109,6 +134,13 @@ st.caption(f"Full app runs: {st.session_state.synthetic_full_runs}")
                 sessions = list((data / 'sessions').glob('*.json'))
                 assert len(sessions) == 1
                 saved = json.loads(sessions[0].read_text())
+                if scenario == 'navigation':
+                    assert len(saved['records']) == 4 and all(row['Status'] == 'OK' for row in saved['records'])
+                    assert len(saved['audit_log']) == 17 and len(saved['resolved']) == 16
+                    assert all(entry['Operator'] == '测试复核人' for entry in saved['audit_log'])
+                    assert len(saved['item_rows']) == 16 and all(row['Marked Answer'] == 'A' for row in saved['item_rows'])
+                    print('Navigation preserved all card results and 17 audit entries.', flush=True)
+                    continue
                 identity = scenario != 'marks'
                 marks = scenario != 'id-only'
                 assert len(saved['audit_log']) == (1 if identity else 0) + (10 if marks else 0)

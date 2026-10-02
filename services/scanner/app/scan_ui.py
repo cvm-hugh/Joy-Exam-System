@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.constants import CONFIG_DIR, ensure_runtime_config
 from app.review_scroll import install_review_scroll_lock
+from app.review_navigation import EXPORT_TARGET_KEY, first_pending_review_key, review_card_key
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, save_roster_snapshot
 from app.review_store import (audit_entry, delete_review_session,
@@ -62,6 +63,7 @@ def initialize() -> None:
         "loaded_session_folder": "", "view": "setup", "part_expand_notices": {},
         "stable_review_sources": set(), "ui_zoom": 100,
         "pending_image_rescan": None,
+        "review_navigation": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -69,6 +71,8 @@ def initialize() -> None:
 
 def reset_review_widgets(source_image: str | None = None) -> None:
     """Fresh recognition must not inherit widget values from an older review."""
+    if source_image is None:
+        st.session_state.pop("review_navigation", None)
     prefixes = ("choice_", "saved_choice_", "save_mark_", "id_", "confirm_id_", "confirm_supplement_",
                 "supplement_name_", "supplement_grade_", "supplement_branch_", "supplement_class_", "supplement_session_")
     for key in list(st.session_state):
@@ -455,6 +459,18 @@ def find_record(source_image: str) -> dict | None:
     return next((record for record in st.session_state.records if record["Source Image"] == source_image), None)
 
 
+def complete_review_card(source_image: str) -> None:
+    """Hide a finished card, then return to the first genuinely unfinished card."""
+    record = find_record(source_image)
+    if record is None or record.get("Status") != "OK":
+        return
+    st.session_state.stable_review_sources.discard(source_image)
+    st.session_state.review_navigation = {
+        "target": first_pending_review_key(st.session_state.records),
+        "token": uuid.uuid4().hex,
+    }
+
+
 def current_mark_choice(record: dict, item: dict) -> str:
     if "section" in item:
         row = next((row for row in st.session_state.item_rows if row["Source Image"] == record["Source Image"] and row["Section"] == item["section"] and str(row["Question"]) == str(item["number"])), None)
@@ -799,7 +815,7 @@ if st.button(scan_button_label, type="primary", disabled=not images):
 def render_review_workspace(students: dict, template: dict) -> None:
     """Update review, scores and export controls together without rerunning setup."""
     records = st.session_state.records
-    install_review_scroll_lock()
+    install_review_scroll_lock(st.session_state.get("review_navigation"))
     # 本系统只处理答题卡图片复核。纸质原卷是导出后的独立后续流程，
     # 不应在扫描工作台中作为二选一的核查依据。
     st.session_state.review_basis = "答题卡图片"
@@ -869,7 +885,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
             st.info("本批次没有需要人工检查的项目。")
         for record in check_records:
             display_status = "已完成" if record["Status"] == "OK" else record["Status"]
-            with st.expander(f"{display_status} · {record['Source Image']}", expanded=True):
+            with st.container(key=review_card_key(record["Source Image"])), st.expander(f"{display_status} · {record['Source Image']}", expanded=True):
                 render_card_overview(record, template)
                 render_exam_identity_review(record, students)
                 st.markdown("#### 答题内容核对")
@@ -976,11 +992,14 @@ def render_review_workspace(students: dict, template: dict) -> None:
                     st.caption("暂无需要人工复核的答题内容项目。")
                 if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
                     st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
-                    if st.button("完成并收起本张", key=f"hide_completed_{record['Source Image']}"):
-                        st.session_state.stable_review_sources.discard(record["Source Image"])
-                        st.rerun()
+                    st.button(
+                        "完成并收起本张", key=f"hide_completed_{record['Source Image']}",
+                        help="收起后自动定位到第一张尚未完成的考卷；全部完成后定位到导出区。",
+                        on_click=complete_review_card, args=(record["Source Image"],),
+                    )
 
-    st.subheader("导出最终成绩文件")
+    with st.container(key=EXPORT_TARGET_KEY):
+        st.subheader("导出最终成绩文件")
     st.caption("自动保存只保存复核进度，不会生成成绩 Excel，也不会弹出“另存为”。只有点击下方按钮才会导出。")
     pending_records = [record for record in records if record["Status"] in {"CHECK_ID", "CHECK_MARK", "CHECK_PART_EMPTY"}]
     blank_part_records = [record for record in records if record.get("Blank Parts")]

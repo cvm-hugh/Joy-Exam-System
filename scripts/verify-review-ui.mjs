@@ -2,6 +2,94 @@ import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+
+async function verifyReviewNavigation(page, fullRunBefore) {
+  const card = source => page.locator('.st-key-review_card_' + createHash('sha256').update(source).digest('hex'));
+  const earlier = card('未复核 01（考号待确认）.png');
+  const completed = card('已完成 02.png');
+  const later = card('未复核 03（答题待确认）.png');
+  const cardForms = target => target.locator('[class*="st-key-review_anchor_"] [data-testid="stForm"]');
+  const expectAtTop = async target => {
+    const selector = await target.evaluate(node => '.' + [...node.classList].find(name => name.startsWith('st-key-review_card_')));
+    await page.waitForFunction(selector => {
+      const element = document.querySelector(selector);
+      return element && Math.abs(element.getBoundingClientRect().top - 84) <= 1;
+    }, selector, {timeout: 10000});
+    await page.waitForTimeout(600);
+    assert.ok(Math.abs((await target.boundingBox()).y - 84) <= 1, 'The first unfinished card did not remain at the top of the viewport.');
+    assert.ok(await target.evaluate(node => node.contains(document.activeElement)), 'Keyboard focus did not follow the unfinished card.');
+    assert.ok(await target.locator('details').first().evaluate(node => node.open), 'The unfinished card remained collapsed.');
+    assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore, 'Closing a card reran the whole app.');
+  };
+  await cardForms(earlier).nth(0).getByText('C', {exact: true}).click();
+  await earlier.locator('summary').first().click();
+  await page.waitForFunction(selector => !document.querySelector(selector)?.querySelector('details')?.open,
+                            '.st-key-review_card_' + createHash('sha256').update('未复核 01（考号待确认）.png').digest('hex'));
+  assert.equal(await earlier.locator('details').first().evaluate(node => node.open), false);
+  await cardForms(later).nth(0).getByText('C', {exact: true}).click();
+  await completed.getByRole('button', {name: '完成并收起本张', exact: true}).click();
+  await completed.waitFor({state: 'detached'});
+  await expectAtTop(earlier);
+  assert.ok(await cardForms(earlier).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
+  assert.ok(await cardForms(later).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
+  assert.ok(await page.getByRole('button', {name: /^(导出并另存最终成绩|另存 Excel 备份)/}).isDisabled());
+
+  await earlier.getByRole('textbox', {name: '正确考号或原始学号', exact: true}).fill('S10086');
+  await earlier.getByRole('button', {name: '确认考号', exact: true}).click();
+  await earlier.getByText('考号 010086 已匹配 测试S学生，并确认保存。', {exact: true}).waitFor();
+  // A navigation request must be consumed once. Later single-question saves
+  // still keep the active form in place instead of returning to the card header.
+  const form = cardForms(earlier).nth(4);
+  await form.getByText('A', {exact: true}).click();
+  await form.evaluate(node => {
+    const main = document.querySelector('[data-testid="stMain"]');
+    main.scrollTop += node.getBoundingClientRect().top - 300;
+  });
+  await page.waitForTimeout(300);
+  const before = await form.evaluate(node => node.getBoundingClientRect().top);
+  await form.getByRole('button', {name: '保存该项修正', exact: true}).click();
+  await form.getByRole('button', {name: '修改并重新保存', exact: true}).waitFor();
+  await page.waitForTimeout(700);
+  assert.ok(Math.abs(await form.evaluate(node => node.getBoundingClientRect().top) - before) <= 1,
+            'A consumed navigation request repeated on a later question save.');
+  for (let index = 0; index < 8; index++) {
+    if (index === 4) continue;
+    const target = cardForms(earlier).nth(index);
+    await target.getByText('A', {exact: true}).click();
+    await target.getByRole('button', {name: '保存该项修正', exact: true}).click();
+    await target.getByRole('button', {name: '修改并重新保存', exact: true}).waitFor();
+  }
+  const finish = earlier.getByRole('button', {name: '完成并收起本张', exact: true});
+  await finish.focus();
+  await finish.press('Enter');
+  await earlier.waitFor({state: 'detached'});
+  await expectAtTop(later);
+  assert.ok(await cardForms(later).nth(0).getByRole('radio', {name: 'C', exact: true}).isChecked());
+  for (let index = 0; index < 8; index++) {
+    const target = cardForms(later).nth(index);
+    await target.getByText('A', {exact: true}).click();
+    await target.getByRole('button', {name: '保存该项修正', exact: true}).click();
+    await target.getByRole('button', {name: '修改并重新保存', exact: true}).waitFor();
+  }
+  await later.getByRole('button', {name: '完成并收起本张', exact: true}).click();
+  await later.waitFor({state: 'detached'});
+  const exportTarget = page.locator('.st-key-review_export');
+  await page.waitForFunction(() => {
+    const bounds = document.querySelector('.st-key-review_export')?.getBoundingClientRect();
+    return bounds && bounds.top >= 40 && bounds.bottom < window.innerHeight;
+  });
+  assert.ok(await page.getByRole('button', {name: /^(导出并另存最终成绩|另存 Excel 备份)/}).isEnabled());
+  assert.ok(await exportTarget.evaluate(node => node.contains(document.activeElement)));
+  await page.mouse.wheel(0, -180);
+  await page.waitForTimeout(300);
+  const mainY = await page.evaluate(() => document.querySelector('[data-testid="stMain"]').scrollTop);
+  await page.waitForTimeout(700);
+  assert.equal(await page.evaluate(() => document.querySelector('[data-testid="stMain"]').scrollTop), mainY, 'Navigation overrode intentional scrolling.');
+  assert.equal(await page.evaluate(() => window.__joyReviewScroll.navigation), null);
+  assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore);
+  console.log('Closing cards returns to the first unfinished card, skips completed cards, preserves input, supports keyboard completion and reaches export when finished.');
+}
 const chrome = process.env.JOY_BROWSER_EXECUTABLE || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined);
 const browser = await chromium.launch({executablePath: chrome && existsSync(chrome) ? chrome : undefined, headless: true});
 try {
@@ -11,8 +99,8 @@ try {
   const scenario = process.env.JOY_IDENTITY_SCENARIO || 'marks';
   await page.goto(`http://127.0.0.1:${process.argv[2]}?scenario=${scenario}`);
   const forms = page.locator('[class*="st-key-review_anchor_"] [data-testid="stForm"]');
-  await page.getByRole('heading', {name: '基础信息', exact: true}).waitFor({timeout: 20000});
-  if (scenario !== 'id-only') await forms.nth(7).waitFor({timeout: 20000});
+  await page.getByRole('heading', {name: '基础信息', exact: true}).first().waitFor({timeout: 20000});
+  if (scenario !== 'id-only') await forms.nth(scenario === 'navigation' ? 15 : 7).waitFor({timeout: 20000});
   if (process.env.JOY_TEST_ZOOM && process.env.JOY_TEST_ZOOM !== '100') {
     await page.getByRole('button', {name: '🔍 界面缩放'}).click();
     await page.getByText(`${process.env.JOY_TEST_ZOOM}%`, {exact: true}).click();
@@ -20,6 +108,10 @@ try {
     await page.waitForTimeout(400);
   }
   const fullRunBefore = await page.getByText(/^Full app runs: /).innerText();
+  if (scenario === 'navigation') {
+    await verifyReviewNavigation(page, fullRunBefore);
+    assert.deepEqual(pageErrors, [], 'Browser errors occurred.');
+  } else {
   const checkOverview = async () => {
     assert.equal(await page.getByRole('heading', {name: '基础信息', exact: true}).count(), 1, 'Base information was duplicated.');
     assert.equal(await page.getByRole('button', {name: /修改图片并重新识别/}).count(), 1, 'Image editing entry was duplicated.');
@@ -147,6 +239,7 @@ try {
   assert.deepEqual(pageErrors, [], 'Browser errors occurred.');
   console.log('All eight questions saved; keyboard submit, user scrolling, export state and fragment-only updates verified without browser errors.');
   await checkOverview();
+  }
   }
 } finally {
   await browser.close();
