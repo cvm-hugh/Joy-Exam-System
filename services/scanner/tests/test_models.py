@@ -674,7 +674,7 @@ class ModelTests(unittest.TestCase):
             result, item_path = export_results([record], item_rows, Path(temp), "空白复核", include_items=True)
             self.assertIsNone(item_path)
             workbook = load_workbook(result, read_only=True, data_only=True)
-            self.assertEqual(workbook.sheetnames, ["成绩汇总", "逐题明细", "需复核名单"])
+            self.assertEqual(workbook.sheetnames, ["成绩汇总", "逐题明细", "需复核名单", "信息待补充"])
             review_values = list(workbook["需复核名单"].iter_rows(values_only=True))
             review_header = {value: index for index, value in enumerate(review_values[0])}
             self.assertEqual(review_values[1][review_header["考号"]], "261002")

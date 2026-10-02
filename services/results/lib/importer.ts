@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import ExcelJS from 'exceljs';
 import Decimal from 'decimal.js';
+import { normalizeYearLevel } from './student-information';
 import {
   defaultAnalysis,
   BRANCH_OPTIONS,
@@ -110,8 +111,7 @@ function metadataText(value: unknown): string {
 }
 
 function normalizedYearLevel(value: unknown) {
-  const text = metadataText(value);
-  return ({ 初一: '七年级', 初二: '八年级', 初三: '九年级' } as Record<string, string>)[text] ?? text;
+  return normalizeYearLevel(metadataText(value));
 }
 
 function sourceHeaderPosition(headers: string[], aliases: string[]) {
@@ -124,21 +124,26 @@ function attachSourceData(students: Student[], rows: unknown[][]) {
   const headers = rows[0].map((value) =>
     typeof value === 'string' ? value.trim() : '',
   );
-  // The compact result-management template contains only normalized fields.
-  // Retain raw values only for the original administrative roster layout.
-  if (!headers.some((header) => compactHeader(header) === compactHeader('学号')))
-    return students;
+  // Every import path retains its original columns, including unknown grades.
   const examPosition = sourceHeaderPosition(headers, [
     '考号', '学号', 'Exam ID', '考生号', '准考证号', '考试号',
   ]);
   if (examPosition < 0) return students;
+  const usedHeaders = new Set<string>();
+  const sourceKeys = headers.map((header, index) => {
+    const base = header || `未命名列${index + 1}`;
+    let key = base;
+    let suffix = 1;
+    while (usedHeaders.has(key)) key = `${base}（原始列${index + 1}·${suffix++}）`;
+    usedHeaders.add(key);
+    return key;
+  });
   const byExamNo = new Map<string, Record<string, string>>();
   for (const row of rows.slice(1)) {
     const examNo = normalizedExamNo(row[examPosition]);
     if (!examNo) continue;
     const sourceData: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      if (!header || Object.hasOwn(sourceData, header)) return;
+    sourceKeys.forEach((header, index) => {
       const value = row[index];
       sourceData[header] = metadataText(value);
     });
@@ -146,7 +151,7 @@ function attachSourceData(students: Student[], rows: unknown[][]) {
   }
   return students.map((student) => ({
     ...student,
-    sourceData: byExamNo.get(student.examNo) ?? {},
+    sourceData: byExamNo.get(student.examNo) ?? student.sourceData ?? {},
   }));
 }
 
@@ -247,7 +252,7 @@ export function normalizeScoreExportRows(
           .find(Boolean) ?? '';
         return chineseDisplayName(name);
       }
-      if (header === '年级') return normalizedYearLevel(row[position]);
+      if (header === '年级') return metadataText(row[position]);
       if (['分校名称', '班级名称', '笔试时间'].includes(header))
         return metadataText(row[position]);
       return row[position] ?? '';
@@ -393,7 +398,7 @@ export function validateRows(
         `第${line}行：总分${total.toString()}与各Part之和${sum.toString()}不一致（共享Part只计一次）`,
       );
     if (issues.length === start)
-      students.push({ ...identity.data, ...info.data!, scores, total: total!.toString() });
+      students.push({ ...identity.data, ...info.data!, sourceData: Object.fromEntries(HEADERS.map((header, position) => [header, metadataText(row[position])])), scores, total: total!.toString() });
   });
   if (issues.length) throw new ImportError(issues.slice(0, 100));
   if (!students.length) throw new ImportError(['文件没有有效学生成绩']);
@@ -438,10 +443,11 @@ export async function makeTemplate(
     formulae: [`"${YEAR_LEVEL_OPTIONS.join(',')}"`],
     showInputMessage: true,
     promptTitle: '选择年级',
-    prompt: '请选择“几年级”，不要填写“初一、初二、初三”。',
+    prompt: '年级选填，未知可留空；初一至初三会自动统一为七至九年级。',
     showErrorMessage: true,
-    errorTitle: '年级格式不正确',
-    error: '年级须使用“一年级”至“九年级”的写法。',
+    errorStyle: 'warning',
+    errorTitle: '请核对年级',
+    error: '建议选择“一年级”至“九年级”；其他写法可以保留，未知可留空。',
   };
   const validationRanges = sheet as ExcelJS.Worksheet & {
     dataValidations: {
@@ -458,7 +464,8 @@ export async function makeTemplate(
     `分校名称须从下拉列表选择：${BRANCH_OPTIONS.join('、')}。`,
     '班级名称、笔试时间、年级只作信息保留，不参与报告版式或成绩计算；可以留空。',
     '笔试时间不限定格式，系统按单元格内容原样保留；Excel日期会转成“年-月-日”。',
-    '年级如填写，须从“一年级”至“九年级”中选择；旧写法“初一、初二、初三”导入时分别转换为“七年级、八年级、九年级”。',
+    '年级选填；初一、初二、初三自动统一为七年级、八年级、九年级；空白、斜杠及未知视为待补充。其他写法保留并提醒核对，不阻断导入。',
+    '导出前会列出分校、班级、笔试时间和年级的待补充信息；参考信息未补齐时可以继续导出，Excel附有“信息待补充”清单。',
     '长图文件名：分校-班级-学生中文名-考号.png。',
     '考号按文本填写，保留前导零。',
     '每个Part必填；缺考、缺分不可直接留空或按零分处理。',

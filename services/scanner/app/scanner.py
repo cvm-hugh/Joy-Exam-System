@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 from app.constants import (AMBIGUITY_MARGIN, CONFIG_DIR, FILL_THRESHOLD, OUTPUT_DIR,
                            TEMPLATE_HEIGHT, TEMPLATE_WIDTH)
 from app.roster_import import read_roster
+from app.student_information import student_information_issues
 
 
 STUDENT_RECORD_COLUMNS = ("Exam ID", "Chinese Name", "Year Level", "Branch", "Class", "Exam Session")
@@ -617,6 +618,9 @@ def export_results(records: list[dict[str, Any]], item_rows: list[dict[str, Any]
             for row in worksheet.iter_rows(min_row=2):
                 for cell in row:
                     cell.alignment = Alignment(vertical="center", wrap_text=True)
+    information_columns = ["考号", "学生姓名", "信息字段", "当前填写内容", "提示"]
+    _append_sheet(workbook, "信息待补充", information_columns,
+                  student_information_issues(records), {}, "98641D")
     workbook.save(result_path)
     return result_path, None
 

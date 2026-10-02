@@ -18,7 +18,7 @@ import {
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 
-type Options = { title?: string; confirmLabel?: string; destructive?: boolean };
+type Options = { title?: string; confirmLabel?: string; cancelLabel?: string; destructive?: boolean };
 type Ask = (message: string, options?: Options) => Promise<boolean>;
 const Context = createContext<Ask>(() => Promise.resolve(false));
 
@@ -64,7 +64,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           </AlertDialogDescription>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => finish(false)}>
-              取消
+              {pending?.cancelLabel ?? '取消'}
             </AlertDialogCancel>
             <AlertDialogAction
               variant={pending?.destructive ? 'destructive' : 'default'}

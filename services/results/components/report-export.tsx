@@ -5,6 +5,8 @@ import { Button } from './ui/button';
 import { api } from '@/lib/client';
 import type { Analysis, Result, Student } from '@/lib/domain';
 import { localExportStamp, planReportExport } from '@/lib/report-export-plan';
+import { useConfirm } from './confirm-action';
+import type { StudentInformationSummary } from '@/lib/student-information';
 
 type DesktopExportHandler = { postMessage: (message: Record<string, unknown>) => void };
 
@@ -21,15 +23,21 @@ function triggerDownload(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-export function ReportExport({ count, revision, disabled, onBusyChange, selectedExamNos }: {
+export function ReportExport({ count, revision, disabled, onBusyChange, selectedExamNos, onFillInformation }: {
   count: number; revision: number; disabled: boolean; onBusyChange: (value: boolean) => void;
   selectedExamNos?: string[];
+  onFillInformation: (examNo: string) => Promise<void>;
 }) {
+  const confirm = useConfirm();
   const [running, setRunning] = useState(false);
   const [coefficientRunning, setCoefficientRunning] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [failures, setFailures] = useState<string[]>([]);
+  const [informationCheck, setInformationCheck] = useState<{ revision: number; selectionKey: string; summary: StudentInformationSummary } | null>(null);
+  const selectionKey = JSON.stringify(selectedExamNos ?? []);
+  const information = informationCheck?.revision === revision && informationCheck.selectionKey === selectionKey
+    ? informationCheck.summary : null;
   const stopped = useRef(false);
   useEffect(() => {
     const cancelDesktopExport = () => {
@@ -42,10 +50,28 @@ export function ReportExport({ count, revision, disabled, onBusyChange, selected
       window.removeEventListener('desktop-export-cancelled', cancelDesktopExport);
     };
   }, []);
+  async function checkInformation() {
+    const checked = await api<StudentInformationSummary & { count: number }>('export-information', 'POST', {
+      revision, examNos: selectedExamNos ?? [],
+    });
+    if (checked.count !== ((selectedExamNos?.length ?? 0) || count))
+      throw new Error('名单已更新，请重新开始导出');
+    setInformationCheck({ revision, selectionKey, summary: checked });
+    if (!checked.issueCount) return true;
+    const preview = checked.items.slice(0, 8).map((item) =>
+      `${item.name}（${item.examNo}）· ${item.label}：${item.message}`,
+    ).join('\n');
+    const proceed = await confirm(
+      `本次导出的 ${checked.studentCount} 名学生有 ${checked.issueCount} 项信息待补充或核对。\n\n${preview}${checked.issueCount > 8 ? '\n完整清单可在下方查看，Excel 会附上“信息待补充”清单。' : ''}\n\n您可以返回补充，也可以保留现有信息继续导出。`,
+      { title: '导出前的信息提醒', confirmLabel: '继续导出', cancelLabel: '返回补充' },
+    );
+    if (!proceed && checked.items[0]) await onFillInformation(checked.items[0].examNo);
+    return proceed;
+  }
   async function start() {
     const selected = selectedExamNos ?? [];
     const targetCount = selected.length || count;
-    if (running || disabled || !targetCount) return;
+    if (running || coefficientRunning || disabled || !targetCount) return;
     stopped.current = false; setRunning(true); onBusyChange(true); setError(''); setFailures([]);
     setStatus('正在检查名单信息…');
     const problems: string[] = [];
@@ -55,6 +81,7 @@ export function ReportExport({ count, revision, disabled, onBusyChange, selected
     const stamp = localExportStamp();
     const folderName = `学生成绩报告-${stamp}-共${targetCount}人`;
     try {
+      if (!(await checkInformation())) { setStatus(''); return; }
       const { default: JSZip } = await import('jszip');
       const { renderReportPdf, reportPdfFileName } = await import('@/lib/report-pdf');
       let zip = new JSZip(), files = 0, bytes = 0;
@@ -126,6 +153,7 @@ export function ReportExport({ count, revision, disabled, onBusyChange, selected
     setCoefficientRunning(true); onBusyChange(true); setError(''); setFailures([]);
     setStatus('正在整理六维得分系数…');
     try {
+      if (!(await checkInformation())) { setStatus(''); return; }
       let records: Array<Student & { qualifiedForInterview?: boolean | null }> = [];
       let analysis: Analysis | null = null;
       let examName = '';
@@ -178,6 +206,17 @@ export function ReportExport({ count, revision, disabled, onBusyChange, selected
     <p className="mini-label">1人直接导出PDF；桌面端2–5人选择一次文件夹后保存独立PDF；6–20人导出单个ZIP；超过20人选择一次位置，自动新建批次文件夹并按每20人或约25MB分包。</p>
     {status && <output>{status}</output>}
     {error && <p className="error" role="alert">{error}</p>}
+    {!!information?.issueCount && <details className="notice" open>
+      <summary>{information.studentCount} 名学生有 {information.issueCount} 项信息待补充或核对</summary>
+      <p>可稍后完善，仍可继续导出；Excel 会附上完整“信息待补充”清单。</p>
+      <div className="table-wrap"><table><thead><tr><th>考号</th><th>学生姓名</th><th>信息字段</th><th>当前内容</th><th>提示</th><th>操作</th></tr></thead><tbody>
+        {information.items.slice(0, 100).map((item) => <tr key={`${item.examNo}-${item.field}`}>
+          <td>{item.examNo}</td><td>{item.name}</td><td>{item.label}</td><td>{item.value || '未填写'}</td><td>{item.message}</td>
+          <td><Button size="sm" variant="ghost" disabled={disabled || running || coefficientRunning} onClick={() => void onFillInformation(item.examNo).catch((e) => setError(e instanceof Error ? e.message : '无法打开学生信息'))}>补充信息</Button></td>
+        </tr>)}
+      </tbody></table></div>
+      {information.issueCount > 100 && <p>界面展示前 100 项；全部项目会写入 Excel 清单，也可在学生名单中逐人补充。</p>}
+    </details>}
     {!!failures.length && <details><summary>查看未成功导出的学生（{failures.length}名）</summary>{failures.map((value) => <p key={value}>{value}</p>)}</details>}
   </div>;
 }

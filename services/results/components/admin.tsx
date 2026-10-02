@@ -24,6 +24,8 @@ import {
 } from '@/components/ui/select';
 import { PublicationPanel } from './publication-panel';
 import { StudentEntry } from './student-entry';
+import { StudentInformationEditor, type InformationStudent } from './student-information-editor';
+import { normalizeYearLevel, studentInformationIssues, type StudentInformationSummary } from '@/lib/student-information';
 import { ReportExport } from './report-export';
 import { ReportPages } from './report-pages';
 import { api, RequestError } from '@/lib/client';
@@ -122,6 +124,8 @@ function AdminScreen() {
   const [paperRevision, setPaperRevision] = useState<number | null>(null);
   const [paperDirty, setPaperDirty] = useState(false);
   const [entryDirty, setEntryDirty] = useState(false);
+  const [informationDirty, setInformationDirty] = useState(false);
+  const [informationStudent, setInformationStudent] = useState<InformationStudent | null>(null);
   const [importDefaultInitialized, setImportDefaultInitialized] =
     useState(false);
   const [replaceConfirmed, setReplaceConfirmed] = useState(false);
@@ -169,6 +173,21 @@ function AdminScreen() {
       `students?page=1&pageSize=${snapshot.count}&all=true`,
     );
     setSelectedExamNos(all.students.map((student) => student.examNo));
+  }
+  async function openStudentInformation(targetExamNo: string) {
+    if (!snapshot?.batchId) return;
+    if (entryDirty && !(await confirm('有未保存的学生补录内容，确定放弃输入并打开信息补充？'))) return;
+    if (informationDirty && !(await confirm('当前有未保存的补充信息，确定放弃输入并打开另一名学生？'))) return;
+    const all = await api<{ students: typeof students }>(`students?page=1&pageSize=${snapshot.count}&all=true`);
+    const index = all.students.findIndex((student) => student.examNo === targetExamNo);
+    if (index < 0) throw new Error('未找到该学生，请刷新名单');
+    setTab('students');
+    setEntryDirty(false);
+    setResult(null);
+    setPage(Math.floor(index / pageSize) + 1);
+    setInformationStudent({ ...all.students[index], revision: snapshot.revision, batchId: snapshot.batchId, sessionKey: crypto.randomUUID() });
+    setInformationDirty(false);
+    setSuccess(locked ? '当前成绩已开放查询，请先关闭查询再保存补充信息。' : '请在名单上方补充该学生的信息。');
   }
   async function previewAndLocateStudent() {
     const preview = await api<AdminPreviewResult>('preview', 'POST', { name, examNo });
@@ -224,13 +243,13 @@ function AdminScreen() {
     };
   }, []);
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !informationDirty) return;
     const listener = (e: BeforeUnloadEvent) => {
       e.preventDefault();
     };
     window.addEventListener('beforeunload', listener);
     return () => window.removeEventListener('beforeunload', listener);
-  }, [dirty]);
+  }, [dirty, informationDirty]);
   useEffect(() => {
     let active = true;
     if (!snapshot || (tab !== 'students' && tab !== 'import')) return;
@@ -296,8 +315,8 @@ function AdminScreen() {
   async function nav(next: Tab) {
     if (next === tab) return;
     if (
-      entryDirty &&
-      !(await confirm('有未保存的学生补录内容，确定离开并放弃输入？'))
+      (entryDirty || informationDirty) &&
+      !(await confirm('有未保存的学生信息，确定离开并放弃输入？'))
     )
       return;
     if (
@@ -310,6 +329,8 @@ function AdminScreen() {
       return;
     setTab(next);
     setEntryDirty(false);
+    setInformationDirty(false);
+    setInformationStudent(null);
     if (next === 'import')
       void reloadTemplates().catch((e: Error) => setError(e.message));
     setError('');
@@ -426,7 +447,14 @@ function AdminScreen() {
             : '资格发布尚未启用；启用并保存当前试卷配置后即可查看精修班口试资格人数。'}
         </div>
       )}
-      <ReportExport count={snapshot.count} revision={snapshot.revision} disabled={busy || dirty} onBusyChange={setBusy} selectedExamNos={selectedExamNos} />
+      {informationStudent && <StudentInformationEditor
+        key={informationStudent.sessionKey}
+        student={informationStudent} currentRevision={snapshot.revision} disabled={busy || locked || dirty}
+        onBusyChange={setBusy} onDirtyChange={setInformationDirty}
+        onSaved={async () => { await refresh(); setInformationStudent(null); setInformationDirty(false); setResult(null); setSuccess('学生信息已补充保存；导出时会使用当前信息并保留原始导入内容。'); }}
+        onCancel={() => { void (async () => { if (informationDirty && !(await confirm('有未保存的补充信息，确定关闭并放弃输入？'))) return; setInformationStudent(null); setInformationDirty(false); })(); }}
+      />}
+      <ReportExport count={snapshot.count} revision={snapshot.revision} disabled={busy || dirty || informationDirty} onBusyChange={setBusy} selectedExamNos={selectedExamNos} onFillInformation={openStudentInformation} />
       {!!snapshot.count && <div className="actions" style={{ marginTop: 12 }}>
         <Button size="sm" variant="outline" disabled={busy || selectedExamNos.length === snapshot.count} onClick={() => void act(selectAllStudents)}>全选全部学生</Button>
         <Button size="sm" variant="ghost" disabled={busy || !selectedExamNos.length} onClick={() => setSelectedExamNos([])}>取消全部选择</Button>
@@ -474,9 +502,10 @@ function AdminScreen() {
                       <td>{s.branch || '待补充'}</td>
                       <td>{s.className || '待补充'}</td>
                       <td>{s.examSession || '待补充'}</td>
-                      <td>{s.yearLevel || '待补充'}</td>
+                      <td>{normalizeYearLevel(s.yearLevel) || '待补充'}{studentInformationIssues(s).some((issue) => issue.field === 'yearLevel' && normalizeYearLevel(s.yearLevel)) && <small> · 需核对</small>}</td>
                       <td>{s.total}</td>
                       <td>
+                        <Button size="sm" variant="ghost" disabled={busy || dirty || locked} onClick={() => void act(() => openStudentInformation(s.examNo))}>补充信息{studentInformationIssues(s).length ? `（${studentInformationIssues(s).length} 项待完善）` : ''}</Button>
                         <Button
                           size="sm"
                           variant="ghost"
@@ -615,7 +644,7 @@ function AdminScreen() {
             disabled={busy}
             onClick={async () => {
               if (
-                (dirty || paperDirty || entryDirty) &&
+                (dirty || paperDirty || entryDirty || informationDirty) &&
                 !(await confirm('有尚未保存的修改，确定退出？'))
               )
                 return;
@@ -840,12 +869,12 @@ function AdminScreen() {
                           form.set('paperTemplateId', paperTemplateId);
                           form.set('paperRevision', String(paperRevision));
                         }
-                        const r = await api<{ count: number }>(
+                        const r = await api<{ count: number; information: StudentInformationSummary }>(
                           'import',
                           'POST',
                           form,
                         );
-                        setSuccess(`已成功导入 ${r.count} 名学生。`);
+                        setSuccess(`已成功导入 ${r.count} 名学生。${r.information?.issueCount ? `其中 ${r.information.studentCount} 名学生有 ${r.information.issueCount} 项信息待补充或核对，可在学生名单中稍后完善。` : ''}`);
                         setPage(1);
                         setResult(null);
                         setReplaceConfirmed(false);

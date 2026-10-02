@@ -105,7 +105,7 @@ export function StudentEntry({
           branch: preview.branch,
           className: preview.className,
           examSession: preview.examSession,
-          yearLevel: preview.yearLevel,
+          yearLevel,
           scores: preview.scores,
         },
       });
@@ -232,7 +232,7 @@ export function StudentEntry({
               {([
                 ['班级名称', className, setClassName, '选填，例如：精修一班'],
                 ['笔试时间', examSession, setExamSession, '选填，按实际文字填写'],
-                ['年级', yearLevel, setYearLevel, '选填，例如：七年级'],
+                ['年级', yearLevel, setYearLevel, '选填，未知可留空，例如：七年级'],
               ] as const).map(([label, value, setter, placeholder]) => (
                 <label key={label} htmlFor={`entry-${label}`}>{label}<Input id={`entry-${label}`} value={value} placeholder={placeholder} maxLength={label === '年级' ? 40 : 80} disabled={disabled || stale || !!preview} onChange={(e) => change(() => setter(e.target.value))}/></label>
               ))}

@@ -28,6 +28,7 @@ from app.review_navigation import (EXPORT_TARGET_KEY, PENDING_REVIEW_STATUSES,
                                    first_pending_review_key, review_card_key, review_panel_key)
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, save_roster_snapshot
+from app.student_information import student_information_issues
 from app.review_store import (audit_entry, delete_review_session,
                               load_review_session, save_review_session)
 from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results, load_students, load_template, update_score_totals
@@ -665,7 +666,9 @@ def render_exam_identity_review(record: dict, students: dict) -> None:
                 with st.form(f"supplement_form_{source}", clear_on_submit=False):
                     for label, field in (("中文名", "name"), ("年级", "grade"), ("分校", "branch"),
                                          ("班级", "class"), ("笔试时间", "session")):
-                        st.text_input(label, key=f"supplement_{field}_{source}")
+                        st.text_input(label, key=f"supplement_{field}_{source}",
+                                      placeholder="选填，未知可留空" if field == "grade" else "",
+                                      help="年级仅供参考，可在结果管理中补充。" if field == "grade" else None)
                     st.form_submit_button("确认为后补学生", key=f"confirm_supplement_{source}",
                                           on_click=save_student_supplement, args=(source, students))
     else:
@@ -1020,6 +1023,12 @@ def render_review_workspace(students: dict, template: dict) -> None:
         st.subheader("导出最终成绩文件")
     st.caption("自动保存只保存复核进度，不会生成成绩 Excel，也不会弹出“另存为”。只有点击下方按钮才会导出。")
     pending_records = [record for record in records if record["Status"] in {"CHECK_ID", "CHECK_MARK", "CHECK_PART_EMPTY"}]
+    information_issues = student_information_issues(records)
+    if information_issues:
+        student_count = len({issue["考号"] for issue in information_issues})
+        st.warning(f"有 {student_count} 名学生的 {len(information_issues)} 项信息待补充或核对，仍可继续交接或导出。进入结果管理后可补充，Excel 中附有“信息待补充”清单。")
+        with st.expander("查看待补充信息"):
+            st.dataframe(information_issues, hide_index=True, width="stretch")
     blank_part_records = [record for record in records if record.get("Blank Parts")]
     if pending_records:
         st.warning(f"仍有 {len(pending_records)} 张答题卡未完成图片复核，完成后才能导出最终成绩。")

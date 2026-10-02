@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { configSchema, identitySchema, readiness, resultFor } from './domain';
+import { configSchema, identitySchema, readiness, resultFor, studentInfoSchema } from './domain';
+import { normalizeYearLevel, summarizeStudentInformation } from './student-information';
 import {
   Store,
   Conflict,
@@ -265,7 +266,7 @@ export async function handleApi(
         state.config.analysis,
       );
       await store.replace(students, state.revision, false, state.config);
-      return json({ ok: true, count: students.length });
+      return json({ ok: true, count: students.length, information: summarizeStudentInformation(students) });
     }
     if (path === 'admin/login' && method === 'POST') {
       if (!csrfValid(request)) return json({ error: '无效请求来源' }, 403);
@@ -612,7 +613,7 @@ export async function handleApi(
         config,
         paper ?? undefined,
       );
-      return json({ ok: true, count: students.length });
+      return json({ ok: true, count: students.length, information: summarizeStudentInformation(students) });
     }
     if (path === 'admin/students/append' && method === 'POST') {
       closed(state);
@@ -635,6 +636,35 @@ export async function handleApi(
       await store.appendStudent(student, input.revision, input.batchId);
       return json({ ok: true });
     }
+    if (path === 'admin/students/information' && method === 'PUT') {
+      closed(state);
+      const input = z.object({
+        revision: revisionSchema,
+        batchId: z.string().min(1),
+        examNo: z.string().trim().min(1).max(64),
+        information: studentInfoSchema,
+      }).strict().parse(await body(request));
+      if (input.revision !== state.revision || input.batchId !== state.batchId) throw new Conflict();
+      if (!(await store.hasExamNo(input.examNo))) throw new ApiError('未找到该学生，请刷新名单', 404);
+      await store.updateStudentInformation(input.examNo, {
+        ...input.information, yearLevel: normalizeYearLevel(input.information.yearLevel),
+      }, input.revision, input.batchId);
+      return json({ ok: true });
+    }
+    if (path === 'admin/export-information' && method === 'POST') {
+      const input = z.object({
+        revision: revisionSchema,
+        examNos: z.array(z.string().trim().min(1).max(64)).max(2000).default([]),
+      }).strict().parse(await body(request));
+      if (input.revision !== state.revision) throw new Conflict();
+      const students = await store.allStudents();
+      const selected = input.examNos.length
+        ? students.filter((student) => input.examNos.includes(student.examNo)) : students;
+      if (input.examNos.length && selected.length !== new Set(input.examNos).size)
+        throw new ApiError('所选学生名单已变化，请刷新后重新选择', 409);
+      if ((await store.state()).revision !== input.revision) throw new Conflict();
+      return json({ count: selected.length, ...summarizeStudentInformation(selected) });
+    }
     if (path === 'admin/report-batch' && method === 'POST') {
       const input = z.object({
         revision: revisionSchema,
@@ -643,9 +673,6 @@ export async function handleApi(
       }).strict().parse(await body(request));
       if (input.revision !== state.revision) throw new Conflict();
       const students = await store.allStudents();
-      const incomplete = students.filter((s) => !s.branch || s.branch === 'XX 分校' || !s.className || !s.examSession || !s.yearLevel);
-      if (incomplete.length)
-        throw new ApiError(`有${incomplete.length}名学生的信息待补全，请按新模板重新导入。考号：${incomplete.slice(0, 10).map((s) => s.examNo).join('、')}`);
       const selected = input.examNos.length
         ? students.filter((student) => input.examNos.includes(student.examNo))
         : students;

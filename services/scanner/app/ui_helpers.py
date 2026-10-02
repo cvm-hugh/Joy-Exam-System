@@ -335,10 +335,10 @@ def apply_student_supplement(
     changed_at: str = "",
 ) -> None:
     """确认考号识别正确，但原名单漏人时，为当前扫描记录补齐身份。"""
-    required = ("Chinese Name", "Year Level", "Branch", "Class", "Exam Session")
+    required = ("Chinese Name", "Branch", "Class", "Exam Session")
     missing = [column for column in required if not str(student.get(column, "")).strip()]
     if missing:
-        raise ValueError("请补齐姓名、年级、分校、班级和笔试时间。")
+        raise ValueError("请补齐姓名、分校、班级和笔试时间；年级未知可留空。")
     original_exam_id = exam_id.strip() or str(record.get("Exam ID", "")).strip()
     confirmed_exam_id = normalize_exam_id(original_exam_id)
     if len(confirmed_exam_id) != 6 or not confirmed_exam_id.isdigit():

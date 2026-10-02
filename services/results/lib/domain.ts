@@ -145,10 +145,8 @@ export const studentInfoSchema = z.object({
   branch: z.string().trim().min(1, '请填写分校名称').max(80),
   className: z.string().trim().max(80),
   examSession: z.string().trim().max(80),
-  yearLevel: z.string().trim().max(40).refine(
-    (value) => !value || YEAR_LEVEL_OPTIONS.includes(value as typeof YEAR_LEVEL_OPTIONS[number]),
-    '年级须使用“一年级”至“九年级”的写法',
-  ),
+  // 年级是参考信息；格式提醒由 student-information 提供，不阻断成绩。
+  yearLevel: z.string().trim().max(40),
 }).strict();
 export function fullMark(analysis: Analysis) {
   return analysis.parts

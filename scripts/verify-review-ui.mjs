@@ -203,7 +203,7 @@ try {
       await page.getByText(/019999.*不在当前学生名单/).waitFor();
       const supplement = page.locator('[data-testid="stForm"]').filter({has: page.getByRole('button', {name: '确认为后补学生', exact: true})});
       await supplement.getByRole('button', {name: '确认为后补学生', exact: true}).click();
-      await page.getByText('请补齐姓名、年级、分校、班级和笔试时间。', {exact: true}).waitFor();
+      await page.getByText('请补齐姓名、分校、班级和笔试时间；年级未知可留空。', {exact: true}).waitFor();
       assert.equal(await identityInput.count(), 1, 'Incomplete supplement incorrectly confirmed identity.');
       for (const [label, value] of [['中文名', '测试后补学生'], ['年级', '六年级'], ['分校', '测试分校'], ['班级', '测试班级'], ['笔试时间', '测试场次']]) {
         await supplement.getByRole('textbox', {name: label, exact: true}).fill(value);

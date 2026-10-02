@@ -59,7 +59,7 @@ async function harness(t: { after: (f: () => void) => void }) {
   }
   return { ...f, call, login, importFixtures };
 }
-test('批量长图数据仅管理员可读，保留四项学生信息、匹配资格，旧版本与缺字段拒绝', async (t) => {
+test('批量长图数据仅管理员可读，保留四项学生信息、匹配资格，旧版本拒绝，参考信息缺失允许导出', async (t) => {
   const h = await harness(t);
   assert.equal((await h.call('admin/report-batch', 'POST', { revision: 0, offset: 0 }, false)).status, 401);
   await h.login(); await h.importFixtures(0);
@@ -82,7 +82,7 @@ test('批量长图数据仅管理员可读，保留四项学生信息、匹配�
   assert.equal((await h.call('admin/report-batch', 'POST', { ...body, revision: 0 })).status, 409);
   await h.DB.prepare("UPDATE students SET class_name='' WHERE exam_no='000001'").run();
   const missing = await h.call('admin/report-batch', 'POST', body);
-  assert.equal(missing.status, 400);
+  assert.equal(missing.status, 200);
   assert.match(JSON.stringify(await missing.json()), /000001/);
 });
 test('合并桌面版可自动建立会话并直接交接阅卷成绩，无需密码或人工导入', async (t) => {

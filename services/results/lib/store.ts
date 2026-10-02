@@ -10,6 +10,7 @@ import {
   type TemplatePayload,
   type SavedTemplate,
 } from './templates';
+import type { StudentInformation } from './student-information';
 export interface Statement {
   bind(...args: unknown[]): Statement;
   first<T = Record<string, unknown>>(): Promise<T | null>;
@@ -177,6 +178,18 @@ export class Store {
         throw new DuplicateStudent();
       throw e;
     }
+  }
+  async updateStudentInformation(examNo: string, information: StudentInformation, revision: number, batchId: string) {
+    // Metadata and the version advance together; original columns and scores stay intact.
+    const result = await this.db.batch([
+      this.db.prepare(
+        "UPDATE students SET branch=?,class_name=?,exam_session=?,year_level=? WHERE exam_no=? AND EXISTS(SELECT 1 FROM exam_state WHERE id=1 AND revision=? AND batch_id=? AND published='closed')",
+      ).bind(information.branch ?? '', information.className ?? '', information.examSession ?? '', information.yearLevel ?? '', examNo, revision, batchId),
+      this.db.prepare(
+        "UPDATE exam_state SET revision=revision+1 WHERE changes()=1 AND id=1 AND revision=? AND batch_id=? AND published='closed'",
+      ).bind(revision, batchId),
+    ]);
+    if (!result[0].meta.changes || !result[1].meta.changes) throw new Conflict();
   }
   async student(name: string, examNo: string): Promise<Student | null> {
     const row = await this.db

@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js';
 import { z } from 'zod';
 import { identitySchema, studentInfoSchema, type Analysis, type Student } from './domain';
+import { normalizeYearLevel } from './student-information';
 
 export function parseStudentEntry(input: unknown, analysis: Analysis): Student {
   const shape = Object.fromEntries(
@@ -30,5 +31,8 @@ export function parseStudentEntry(input: unknown, analysis: Analysis): Student {
   const total = Object.values(scores)
     .reduce((sum, score) => sum.plus(score), new Decimal(0))
     .toString();
-  return { ...parsed, scores, total };
+  return { ...parsed, yearLevel: normalizeYearLevel(parsed.yearLevel), sourceData: {
+    考号: parsed.examNo, 学生姓名: parsed.name, 分校名称: parsed.branch,
+    班级名称: parsed.className, 笔试时间: parsed.examSession, 年级: parsed.yearLevel,
+  }, scores, total };
 }
