@@ -12,7 +12,7 @@
 - `scripts/`：统一安装、启动、检查、测试和构建入口。
 - `contracts/`：内部数据交接约定。
 - `runtime/`：本项目实际考试数据与管理员配置，不提交 Git。
-- `.venv/`、`services/results/node_modules/`：本项目独立安装的开发依赖，不提交 Git。
+- `.venv/`、根目录 `node_modules/` 与 `services/results/node_modules/`：本项目独立安装的开发依赖，不提交 Git。
 - `.local/`：日志、工具配置及迁移前历史备份，不提交 Git。
 
 ## 从源码恢复
@@ -23,10 +23,13 @@
 npm run setup
 npm run check
 npm test
+npm run test:review-ui
 npm run desktop:build
 ```
 
 `setup` 根据本项目的依赖清单安装到根目录 `.venv` 和结果模块自己的 `node_modules`，不借用其他项目环境。可用 `JOY_PYTHON_BOOTSTRAP` 指定 Python 3.12 的解释器位置。
+
+`test:review-ui` 使用虚构名单、答题卡和临时运行目录，验证 75%、100%、110% 缩放下的单题保存、连续修正、键盘提交、审计记录及导出状态。默认使用本机 Chrome；也可通过 `JOY_BROWSER_EXECUTABLE` 指定 Chromium 浏览器可执行文件。
 
 已有 `runtime/.dev.vars` 和考试数据会保留。新环境首次安装时自动生成独立管理员配置，登录资料保存在 `runtime/.local/admin-login.txt`。
 

@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.constants import CONFIG_DIR, ensure_runtime_config
+from app.review_scroll import install_review_scroll_lock
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, read_roster, save_roster_snapshot
 from app.review_store import (audit_entry, delete_review_session,
@@ -66,6 +67,16 @@ def initialize() -> None:
         st.session_state.setdefault(key, value)
 
 
+def reset_review_widgets(source_image: str | None = None) -> None:
+    """Fresh recognition must not inherit widget values from an older review."""
+    prefixes = ("choice_", "saved_choice_", "save_mark_")
+    if source_image is not None:
+        prefixes = tuple(f"{prefix}{source_image}_" for prefix in prefixes)
+    for key in list(st.session_state):
+        if any(key.startswith(prefix) for prefix in prefixes):
+            st.session_state.pop(key, None)
+
+
 def render_display_controls() -> None:
     """调整工作台内容的整体显示比例，不改变原图或识别分辨率。"""
     with st.popover("🔍 界面缩放"):
@@ -87,81 +98,6 @@ def render_display_controls() -> None:
         </style>
         """,
         unsafe_allow_html=True,
-    )
-
-
-def install_review_scroll_lock() -> None:
-    """保存单题修正时锁定浏览器的纵向视线位置。
-
-    Streamlit 会在提交 form 后重绘整页。这段脚本在按下“保存该项修正”
-    的瞬间记住 scrollY，并在重绘及图片重新排版期间多次恢复。
-    """
-    st.iframe(
-        """
-        <script>
-        (() => {
-          const win = window.parent;
-          const doc = win.document;
-          const storageKey = "dingweice-review-scroll-y-v2";
-
-          if (win.__dingweiceReviewScrollCapture) {
-            doc.removeEventListener("pointerdown", win.__dingweiceReviewScrollCapture, true);
-          }
-          const capture = (event) => {
-            const button = event.target.closest && event.target.closest("button");
-            if (!button || !["保存该项修正", "修改并重新保存"].includes(button.innerText.trim())) return;
-            let node = button;
-            let formClass = null;
-            while (node && node !== doc.body) {
-              formClass = [...(node.classList || [])].find((name) => name.startsWith("st-key-review_form_"));
-              if (formClass) break;
-              node = node.parentElement;
-            }
-            const form = formClass
-              ? [...doc.querySelectorAll("[class]")].find((element) => element.classList.contains(formClass))
-              : null;
-            win.sessionStorage.setItem(storageKey, JSON.stringify({
-              y: win.scrollY,
-              formClass,
-              formTop: form ? form.getBoundingClientRect().top : null,
-              expires: Date.now() + 5000
-            }));
-          };
-          win.__dingweiceReviewScrollCapture = capture;
-          doc.addEventListener("pointerdown", capture, true);
-
-          let saved = null;
-          try {
-            saved = JSON.parse(win.sessionStorage.getItem(storageKey) || "null");
-          } catch (_) {
-            win.sessionStorage.removeItem(storageKey);
-          }
-          if (!saved || Date.now() > saved.expires) {
-            win.sessionStorage.removeItem(storageKey);
-            return;
-          }
-          const restoreScroll = () => {
-            const form = saved.formClass
-              ? [...doc.querySelectorAll("[class]")].find((element) => element.classList.contains(saved.formClass))
-              : null;
-            if (form && Number.isFinite(saved.formTop)) {
-              const delta = form.getBoundingClientRect().top - saved.formTop;
-              if (Math.abs(delta) > 1) {
-                win.scrollTo({top: saved.y + delta, left: win.scrollX, behavior: "instant"});
-              }
-            } else {
-              win.scrollTo({top: saved.y, left: win.scrollX, behavior: "instant"});
-            }
-          };
-          [0, 60, 150, 300, 600, 1000].forEach((delay) => {
-            win.setTimeout(restoreScroll, delay);
-          });
-          win.setTimeout(() => win.sessionStorage.removeItem(storageKey), 1200);
-        })();
-        </script>
-        """,
-        height=1,
-        width="content",
     )
 
 
@@ -414,6 +350,7 @@ def rescan_modified_source(record: dict, template_data: dict, student_data: dict
     old_total = record.get("Total", "")
     new_record, new_items = scan_one(path, template_data, student_data)
     source = record["Source Image"]
+    reset_review_widgets(source)
     index = st.session_state.records.index(record)
     st.session_state.records[index] = new_record
     st.session_state.item_rows = [
@@ -844,6 +781,7 @@ if resolved_folder and st.session_state.loaded_session_folder != resolved_folder
 st.subheader("开始扫描")
 scan_button_label = "重新识别全部图片（清空当前复核进度）" if st.session_state.records else "开始识别"
 if st.button(scan_button_label, type="primary", disabled=not images):
+    reset_review_widgets()
     st.session_state.records, st.session_state.item_rows, st.session_state.issues, st.session_state.resolved, st.session_state.confirmed_warnings = [], [], {}, set(), set()
     st.session_state.audit_log = []
     st.session_state.part_expand_notices = {}
@@ -865,7 +803,9 @@ if st.button(scan_button_label, type="primary", disabled=not images):
     persist_current_session()
     progress.progress(1.0, text="扫描完成")
 
-if st.session_state.records:
+@st.fragment
+def render_review_workspace(students: dict, template: dict) -> None:
+    """Update review, scores and export controls together without rerunning setup."""
     records = st.session_state.records
     install_review_scroll_lock()
     # 本系统只处理答题卡图片复核。纸质原卷是导出后的独立后续流程，
@@ -932,7 +872,10 @@ if st.session_state.records:
     review_notice = st.session_state.pop("review_notice", None)
     if review_notice:
         notice_kind, notice_message = review_notice
-        {"success": st.success, "info": st.info, "warning": st.warning}.get(notice_kind, st.error)(notice_message)
+        if notice_kind == "success":
+            st.toast(notice_message, icon="✅")
+        else:
+            {"info": st.info, "warning": st.warning}.get(notice_kind, st.error)(notice_message)
     image_rescan_notice = st.session_state.pop("image_rescan_notice", None)
     if image_rescan_notice:
         notice_kind, notice_message = image_rescan_notice
@@ -1114,29 +1057,27 @@ if st.session_state.records:
                         if not current_choice or current_choice not in choices:
                             current_choice = choices[0]
                         choice_index = choices.index(current_choice) if current_choice in choices else 0
-                        choice_widget_key = (
-                            f"saved_choice_{record['Source Image']}_{item['key']}"
-                            if item_is_resolved
-                            else f"choice_{record['Source Image']}_{item['key']}"
-                        )
-                        if item_is_resolved:
-                            st.success(f"✅ 已保存结果：{current_choice}")
-                        with st.form(
-                            key=f"review_form_{record['Source Image']}_{item['key']}",
-                            border=False,
-                        ):
-                            st.radio(
-                                "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
-                                choices,
-                                horizontal=True,
-                                index=choice_index,
-                                key=choice_widget_key,
-                            )
-                            st.form_submit_button(
-                                "修改并重新保存" if item_is_resolved else "保存该项修正",
-                                on_click=save_mark_review,
-                                args=(record["Source Image"], item["key"], students, choice_widget_key),
-                            )
+                        # Use the same widget identity before and after saving.
+                        choice_widget_key = f"choice_{record['Source Image']}_{item['key']}"
+                        st.caption(f"✅ 已保存结果：{current_choice}" if item_is_resolved else "复核结果：尚未保存")
+                        with st.container(key=f"review_anchor_{record['Source Image']}_{item['key']}"):
+                            with st.form(
+                                key=f"review_form_{record['Source Image']}_{item['key']}",
+                                border=False,
+                            ):
+                                st.radio(
+                                    "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
+                                    choices,
+                                    horizontal=True,
+                                    index=choice_index,
+                                    key=choice_widget_key,
+                                )
+                                st.form_submit_button(
+                                    "修改并重新保存" if item_is_resolved else "保存该项修正",
+                                    key=f"save_mark_{record['Source Image']}_{item['key']}",
+                                    on_click=save_mark_review,
+                                    args=(record["Source Image"], item["key"], students, choice_widget_key),
+                                )
                     if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
                         st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
                         if st.button("完成并收起本张", key=f"hide_completed_{record['Source Image']}"):
@@ -1205,9 +1146,14 @@ if st.session_state.records:
         except OSError as exc:
             st.error(f"保存失败：{exc}")
     if st.button("清空本次结果 / 开始新一批"):
+        reset_review_widgets()
         delete_review_session(st.session_state.folder)
         for key in ("records", "item_rows", "issues", "resolved", "confirmed_warnings", "exports", "show_checks", "edit_source", "edit_mode", "part_expand_notices", "stable_review_sources", "pending_image_rescan", "image_rescan_notice"):
             st.session_state.pop(key, None)
         st.session_state.audit_log = []
         st.session_state.loaded_session_folder = ""
         st.rerun()
+
+
+if st.session_state.records:
+    render_review_workspace(students, template)

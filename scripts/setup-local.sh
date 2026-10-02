@@ -49,6 +49,8 @@ fi
 "$PROJECT_ROOT/.venv/bin/python" -m pip install --disable-pip-version-check -r "$PYTHON_REQUIREMENTS"
 "$PROJECT_ROOT/.venv/bin/python" -m pip check
 
+cd "$PROJECT_ROOT"
+"$NPM_BIN" ci --no-audit --no-fund
 cd "$RESULTS_ROOT"
 "$NPM_BIN" ci --no-audit --no-fund
 print -r -- "$NODE_BIN" > "$PROJECT_ROOT/.local/node-bin"

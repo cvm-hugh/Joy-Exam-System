@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const excluded = new Set(['.git', '.local', '.venv', '.wrangler', '.next', '.vinext', 'node_modules', 'runtime', 'output', 'outputs', 'dist', 'build', 'docs', '__pycache__', 'coverage']);
-const codeExtensions = /\.(?:py|sh|swift|ts|tsx|js|mjs|json)$/;
+const codeExtensions = /\.(?:py|sh|swift|ts|tsx|js|mjs|json|html)$/;
 const oldWorkspacePath = /\/Users\/contiference\/Documents\/ChatGPT\//;
 const issues = [];
 let count = 0;
@@ -27,7 +27,7 @@ function walk(directory) {
   }
 }
 walk(root);
-for (const path of ['.venv', 'services/results/node_modules']) {
+for (const path of ['.venv', 'node_modules', 'services/results/node_modules']) {
   const absolute = join(root, path);
   if (!existsSync(absolute)) issues.push(`缺少本项目依赖：${path}；请运行 npm run setup`);
   else if (lstatSync(absolute).isSymbolicLink()) issues.push(`依赖仍为共享软链接：${path}`);

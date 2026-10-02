@@ -1,0 +1,67 @@
+<!doctype html>
+<html><body><script>
+(() => {
+  const win = window.parent;
+  const doc = win.document;
+  const previous = win.__joyReviewScroll;
+  const pending = previous ? previous.pending : null;
+  if (previous) previous.dispose();
+  if (win.__dingweiceReviewScrollCapture) {
+    doc.removeEventListener('pointerdown', win.__dingweiceReviewScrollCapture, true);
+    delete win.__dingweiceReviewScrollCapture;
+  }
+  const controller = {pending, frame: 0};
+  const submitLabels = new Set(['保存该项修正', '修改并重新保存']);
+  const cancel = () => {
+    controller.pending = null;
+    win.cancelAnimationFrame(controller.frame);
+    controller.frame = 0;
+  };
+  const restore = () => {
+    controller.frame = 0;
+    const saved = controller.pending;
+    if (!saved || Date.now() > saved.expires) return cancel();
+    const form = doc.getElementsByClassName(saved.formClass)[0];
+    const scroller = doc.querySelector('[data-testid="stMain"]') || doc.scrollingElement;
+    // Wait for a temporarily unmounted form to return; never jump to the page top.
+    if (form && scroller) {
+      const delta = form.getBoundingClientRect().top - saved.top;
+      if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
+    }
+    controller.frame = win.requestAnimationFrame(restore);
+  };
+  const capture = (event) => {
+    const target = event.target instanceof win.Element ? event.target : null;
+    const button = target?.closest('button');
+    if (event.type === 'keydown') {
+      if (!['Enter', ' '].includes(event.key)) return cancel();
+      if (event.key === ' ' && !button) return cancel();
+    }
+    const formElement = target?.closest('[data-testid="stForm"]');
+    const submitButton = button || (event.type === 'keydown' && event.key === 'Enter'
+      ? [...(formElement?.querySelectorAll('button') || [])].find(node => submitLabels.has(node.innerText.trim())) : null);
+    if (!submitButton || !submitLabels.has(submitButton.innerText.trim()) || submitButton.disabled) return cancel();
+    let form = submitButton;
+    let formClass;
+    while (form && form !== doc.body) {
+      formClass = [...form.classList].find(name => name.startsWith('st-key-review_anchor_'));
+      if (formClass) break;
+      form = form.parentElement;
+    }
+    if (!formClass) return cancel();
+    controller.pending = {formClass, top: form.getBoundingClientRect().top, expires: Date.now() + 5000};
+    if (!controller.frame) controller.frame = win.requestAnimationFrame(restore);
+  };
+  const listeners = [
+    ['pointerdown', capture], ['keydown', capture],
+    ['wheel', cancel], ['touchstart', cancel],
+  ];
+  for (const [type, handler] of listeners) doc.addEventListener(type, handler, {capture: true, passive: true});
+  controller.dispose = () => {
+    win.cancelAnimationFrame(controller.frame);
+    for (const [type, handler] of listeners) doc.removeEventListener(type, handler, true);
+  };
+  win.__joyReviewScroll = controller;
+  if (controller.pending) controller.frame = win.requestAnimationFrame(restore);
+})();
+</script></body></html>
