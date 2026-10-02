@@ -68,11 +68,21 @@ def load_answer_key() -> dict[str, dict[str, str]]:
 
 def load_students() -> dict[str, dict[str, str]]:
     imported = read_roster(CONFIG_DIR / "student_list.xlsx")
-    return {row["Exam ID"].zfill(6): dict(row) for row in imported.rows}
+    source_path = CONFIG_DIR / "roster_source.xlsx"
+    original = read_roster(source_path) if source_path.is_file() else imported
+    exam_position = dict(original.source_positions)["Exam ID"]
+    original_ids = {
+        row["Exam ID"]: str(source[exam_position]).strip()
+        for row, source in zip(original.rows, original.source_rows)
+    }
+    return {
+        row["Exam ID"]: {**row, "Original Exam ID": original_ids.get(row["Exam ID"], row["Exam ID"])}
+        for row in imported.rows
+    }
 
 
 def student_record(student: dict[str, str] | None, exam_id: str) -> dict[str, str]:
-    return {
+    record = {
         "Exam ID": exam_id,
         "Chinese Name": student.get("Chinese Name", "") if student else "",
         "Year Level": student.get("Year Level", "") if student else "",
@@ -80,6 +90,9 @@ def student_record(student: dict[str, str] | None, exam_id: str) -> dict[str, st
         "Class": student.get("Class", "") if student else "",
         "Exam Session": student.get("Exam Session", "") if student else "",
     }
+    if student and student.get("Original Exam ID"):
+        record["Original Exam ID"] = student["Original Exam ID"]
+    return record
 
 
 def update_score_totals(record: dict[str, Any]) -> None:
@@ -525,7 +538,12 @@ def _append_summary_sheet(workbook: Workbook, records: list[dict[str, Any]]):
     """
     source_path = CONFIG_DIR / "roster_source.xlsx"
     if not source_path.is_file():
-        return _append_sheet(workbook, "成绩汇总", RESULT_COLUMNS, records, RESULT_HEADER_LABELS)
+        # Preserve a known original student number even in the legacy format.
+        exported_records = [
+            {**record, "Exam ID": record.get("Original Exam ID") or record.get("Exam ID", "")}
+            for record in records
+        ]
+        return _append_sheet(workbook, "成绩汇总", RESULT_COLUMNS, exported_records, RESULT_HEADER_LABELS)
 
     imported = read_roster(source_path)
     source_headers = list(imported.source_headers)
@@ -560,7 +578,7 @@ def _append_summary_sheet(workbook: Workbook, records: list[dict[str, Any]]):
         # 名单内学生保留原始 S + 5 位学号；阅卷匹配只在内部
         # 使用 0 + 5 位考号。只有名单外记录才需要回填内部考号。
         if source_row_missing and exam_position is not None and exam_position < len(source_row):
-            source_row[exam_position] = exam_id
+            source_row[exam_position] = record.get("Original Exam ID") or exam_id
         worksheet.append(source_row + [record.get(column, "") for column in append_columns])
     _style_sheet(worksheet)
     return worksheet

@@ -25,12 +25,12 @@ from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.constants import CONFIG_DIR, ensure_runtime_config
 from app.review_scroll import install_review_scroll_lock
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
-from app.roster_import import generate_roster_template, read_roster, save_roster_snapshot
+from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, save_roster_snapshot
 from app.review_store import (audit_entry, delete_review_session,
                               load_review_session, save_review_session)
 from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results, load_students, load_template, update_score_totals
-from app.ui_helpers import (MANUAL_SCORE_PARTS, answer_card_preview, apply_exam_id,
-                            apply_mark, apply_part_empty, apply_part_score,
+from app.ui_helpers import (answer_card_preview, apply_exam_id,
+                            apply_mark, apply_part_empty,
                             apply_student_supplement, choose_macos_folder,
                             exam_id_crop, image_paths, issue_key, low_answer_warning,
                             open_original_in_preview, prepare_mark_review, required_files,
@@ -58,7 +58,7 @@ def initialize() -> None:
         "records": [], "item_rows": [], "issues": {}, "resolved": set(),
         "confirmed_warnings": set(), "audit_log": [], "reviewer": getpass.getuser(),
         "review_basis": "答题卡图片", "folder": "", "exports": None,
-        "edit_source": None, "edit_mode": None,
+        "identity_notices": {},
         "loaded_session_folder": "", "view": "setup", "part_expand_notices": {},
         "stable_review_sources": set(), "ui_zoom": 100,
         "pending_image_rescan": None,
@@ -69,12 +69,21 @@ def initialize() -> None:
 
 def reset_review_widgets(source_image: str | None = None) -> None:
     """Fresh recognition must not inherit widget values from an older review."""
-    prefixes = ("choice_", "saved_choice_", "save_mark_")
-    if source_image is not None:
-        prefixes = tuple(f"{prefix}{source_image}_" for prefix in prefixes)
+    prefixes = ("choice_", "saved_choice_", "save_mark_", "id_", "confirm_id_", "confirm_supplement_",
+                "supplement_name_", "supplement_grade_", "supplement_branch_", "supplement_class_", "supplement_session_")
     for key in list(st.session_state):
-        if any(key.startswith(prefix) for prefix in prefixes):
+        if source_image is None:
+            matches = any(key.startswith(prefix) for prefix in prefixes)
+        else:
+            matches = any(key == f"{prefix}{source_image}" or key.startswith(f"{prefix}{source_image}_") for prefix in prefixes)
+        if matches:
             st.session_state.pop(key, None)
+    notices = st.session_state.get("identity_notices")
+    if notices is not None:
+        if source_image is None:
+            notices.clear()
+        else:
+            notices.pop(source_image, None)
 
 
 def render_display_controls() -> None:
@@ -446,19 +455,6 @@ def find_record(source_image: str) -> dict | None:
     return next((record for record in st.session_state.records if record["Source Image"] == source_image), None)
 
 
-def reset_editor_widgets(source_image: str) -> None:
-    prefixes = (f"whole_id_{source_image}", f"whole_score_{source_image}_", f"edit_id_{source_image}", f"edit_part_{source_image}", f"edit_part_score_{source_image}_", f"reedit_choice_{source_image}_")
-    for key in list(st.session_state):
-        if any(key == prefix or key.startswith(prefix) for prefix in prefixes):
-            st.session_state.pop(key, None)
-
-
-def set_edit_source(source_image: str, mode: str) -> None:
-    reset_editor_widgets(source_image)
-    st.session_state.edit_source = source_image
-    st.session_state.edit_mode = mode
-
-
 def current_mark_choice(record: dict, item: dict) -> str:
     if "section" in item:
         row = next((row for row in st.session_state.item_rows if row["Source Image"] == record["Source Image"] and row["Section"] == item["section"] and str(row["Question"]) == str(item["number"])), None)
@@ -523,7 +519,7 @@ def save_exam_id_review(source_image: str, students: dict) -> None:
         set_review_notice("error", "未找到需要修正的答题卡记录。")
         return
     reviewer = ensure_reviewer()
-    normalized_id = str(st.session_state.get(f"id_{source_image}", "")).strip()
+    normalized_id = normalize_exam_id(st.session_state.get(f"id_{source_image}", ""))
     before_id = record.get("Exam ID")
     entry = None
     if len(normalized_id) == 6 and normalized_id.isdigit() and normalized_id in students:
@@ -538,12 +534,121 @@ def save_exam_id_review(source_image: str, students: dict) -> None:
         changed_at=entry["Changed At"] if entry else "",
     )
     if not valid:
-        set_review_notice("error", message)
+        set_identity_notice(source_image, "error", message)
         return
+    st.session_state.stable_review_sources.add(source_image)
     refresh_status(record, students)
     st.session_state.exports = None
     persist_current_session()
-    set_review_notice("success", f"考号 {normalized_id} 已修正并保存。")
+    set_identity_notice(source_image, "success", f"考号 {normalized_id} 已匹配 {record['Chinese Name']}，并确认保存。")
+
+
+def set_identity_notice(source_image: str, kind: str, message: str) -> None:
+    st.session_state.identity_notices[source_image] = (kind, message)
+
+
+def save_student_supplement(source_image: str, students: dict) -> None:
+    """Confirm a missing student only after validating the submitted identity fields."""
+    record = find_record(source_image)
+    if record is None:
+        set_review_notice("error", "未找到需要补全身份的答题卡记录。")
+        return
+    entered_id = str(st.session_state.get(f"id_{source_image}", "")).strip()
+    normalized_id = normalize_exam_id(entered_id)
+    if normalized_id in students:
+        set_identity_notice(source_image, "error", "该考号已在当前名单中，请使用“确认考号”匹配名单。")
+        return
+    student_data = {
+        column: str(st.session_state.get(f"supplement_{field}_{source_image}", "")).strip()
+        for column, field in (
+            ("Chinese Name", "name"), ("Year Level", "grade"), ("Branch", "branch"),
+            ("Class", "class"), ("Exam Session", "session"),
+        )
+    }
+    entry = audit_entry(
+        record, operator=ensure_reviewer(), change_type="补全名单外学生", target="学生身份",
+        original_value=record.get("Exam ID", ""),
+        corrected_value=f"{normalized_id} / {student_data['Chinese Name']}",
+        review_basis=st.session_state.review_basis, note="原始名单中无该考号",
+    )
+    try:
+        apply_student_supplement(
+            record, st.session_state.item_rows, student_data, exam_id=entered_id,
+            operator=st.session_state.reviewer, review_basis=st.session_state.review_basis,
+            changed_at=entry["Changed At"],
+        )
+    except ValueError as exc:
+        set_identity_notice(source_image, "error", str(exc))
+        return
+    st.session_state.audit_log.append(entry)
+    st.session_state.stable_review_sources.add(source_image)
+    refresh_status(record, students)
+    st.session_state.exports = None
+    persist_current_session()
+    set_identity_notice(source_image, "success", f"考号 {normalized_id} 的后补学生信息已确认并保存。")
+
+
+def render_card_overview(record: dict, template: dict) -> None:
+    """One source image and editing entry for both identity and answer review."""
+    source = record["Source Image"]
+    source_path = Path(record["Source Path"])
+    st.markdown("#### 基础信息")
+    show_source_file_name(record, f"review_source_{source}")
+    st.write(f"扫描状态：{record.get('Scan Result Status', '')}")
+    with st.container(key=f"review_images_{source}"):
+        id_column, card_column = st.columns([1, 2])
+        with id_column:
+            id_image = cached_exam_id_crop(str(source_path), _source_version(source_path), template)
+            if id_image is not None:
+                st.image(id_image, caption="考号区域", width="stretch")
+            else:
+                st.warning("无法生成考号区域截图；请查看右侧整张答题卡。")
+        with card_column:
+            card_image = cached_answer_card_preview(str(source_path), _source_version(source_path))
+            if card_image is not None:
+                st.image(card_image, caption="整张答题卡", width="stretch")
+            else:
+                st.warning("无法读取原始答题卡图片。")
+
+
+def render_exam_identity_review(record: dict, students: dict) -> None:
+    source = record["Source Image"]
+    st.markdown("#### 考号核对")
+    st.caption("名单学号 S10086 对应答题卡考号 010086；导出成绩保留原始学号。")
+    if record["Status"] == "CHECK_ID":
+        recognized_id = str(record.get("Exam ID", ""))
+        st.write(f"系统识别：`{recognized_id}`")
+        normalized_recognized = normalize_exam_id(recognized_id)
+        with st.form(f"exam_id_form_{source}", clear_on_submit=False):
+            entered_id = st.text_input(
+                "正确考号或原始学号",
+                value=normalized_recognized if len(normalized_recognized) == 6 and normalized_recognized.isdigit() else "",
+                key=f"id_{source}",
+                help="可填写 010086 或 S10086，系统按同一个学生匹配。",
+            )
+            st.form_submit_button("确认考号", key=f"confirm_id_{source}",
+                                  on_click=save_exam_id_review, args=(source, students))
+        notice = st.session_state.identity_notices.get(source)
+        if notice:
+            kind, message = notice
+            (st.success if kind == "success" else st.error)(message)
+        normalized_id = normalize_exam_id(entered_id)
+        if len(normalized_id) == 6 and normalized_id.isdigit() and normalized_id not in students:
+            with st.expander("考号识别正确，但原名单漏了该学生", expanded=True):
+                st.caption(f"后补学生考号：{normalized_id}。补全后仅用于本批阅卷，原始名单 Excel 不会被改写。")
+                with st.form(f"supplement_form_{source}", clear_on_submit=False):
+                    for label, field in (("中文名", "name"), ("年级", "grade"), ("分校", "branch"),
+                                         ("班级", "class"), ("笔试时间", "session")):
+                        st.text_input(label, key=f"supplement_{field}_{source}")
+                    st.form_submit_button("确认为后补学生", key=f"confirm_supplement_{source}",
+                                          on_click=save_student_supplement, args=(source, students))
+    else:
+        notice = st.session_state.identity_notices.get(source)
+        if notice:
+            kind, message = notice
+            (st.success if kind == "success" else st.error)(message)
+        prefix = "已确认为后补学生" if record.get("Identity Confirmed") else "已匹配当前名单"
+        st.caption(f"{prefix}：考号 {record['Exam ID']} · {record.get('Chinese Name', '')}")
 
 
 def save_mark_review(source_image: str, item_key: str, students: dict, choice_widget_key: str | None = None) -> None:
@@ -584,118 +689,6 @@ def save_mark_review(source_image: str, item_key: str, students: dict, choice_wi
     persist_current_session()
     set_review_notice("success", f"{item['title']} 修正已保存。")
 
-
-def show_whole_card(record: dict) -> None:
-    source_path = Path(record["Source Path"])
-    card_image = cached_answer_card_preview(str(source_path), _source_version(source_path))
-    if card_image is not None:
-        st.image(card_image, caption="原始整张答题卡", width="stretch")
-    else:
-        st.warning("无法读取原始答题卡图片。")
-
-
-def render_modify_panel(record: dict, students: dict) -> None:
-    source = record["Source Image"]
-    st.subheader("重新修改该卷")
-    show_source_file_name(record, f"open_edit_source_{source}")
-    st.write(f"Exam ID：`{record.get('Exam ID', '')}`　中文名：{record.get('Chinese Name', '')}　分校：{record.get('Branch', '')}")
-    st.metric("Total", record.get("Total", 0))
-    with st.expander("查看整张原图", expanded=False):
-        show_whole_card(record)
-
-    st.markdown("#### 修正识别结果")
-    with st.expander("修改 Exam ID", expanded=False):
-        entered_id = st.text_input("正确的 6 位 Exam ID", value=str(record.get("Exam ID", "")) if str(record.get("Exam ID", "")).isdigit() else "", max_chars=6, key=f"edit_id_{source}").strip()
-        student = students.get(entered_id) if len(entered_id) == 6 and entered_id.isdigit() else None
-        if entered_id:
-            if student is None:
-                st.error("该 Exam ID 不在当前 Students List 中。")
-            else:
-                st.caption(f"中文名：{student['Chinese Name']}　年级：{student['Year Level']}　分校：{student['Branch']}　班级：{student['Class']}　笔试时间：{student['Exam Session']}")
-        if st.button("保存 Exam ID 修改", disabled=student is None, key=f"save_edit_id_{source}"):
-            ensure_reviewer()
-            if entered_id == record.get("Exam ID"):
-                st.info("Exam ID 未发生变化。")
-            else:
-                entry = append_audit(
-                    record, change_type="修正考号", target="Exam ID",
-                    original_value=record.get("Exam ID"), corrected_value=entered_id,
-                )
-                valid, message = apply_exam_id(
-                    record, st.session_state.item_rows, entered_id, students,
-                    operator=st.session_state.reviewer,
-                    review_basis=st.session_state.review_basis,
-                    changed_at=entry["Changed At"],
-                )
-                if valid:
-                    refresh_status(record, students)
-                    st.session_state.exports = None
-                    persist_current_session()
-                    st.success("Exam ID 已重新保存。")
-                    st.rerun()
-                else:
-                    st.error(message)
-
-    with st.expander("修改 Part 得分", expanded=False):
-        part_by_column = {column: (label, maximum) for label, column, maximum in MANUAL_SCORE_PARTS}
-        selected_column = st.selectbox("选择 Part", list(part_by_column), format_func=lambda column: part_by_column[column][0], key=f"edit_part_{source}")
-        label, maximum = part_by_column[selected_column]
-        new_value = int(st.number_input(f"{label} 得分", min_value=0, max_value=maximum, value=int(record.get(selected_column) or 0), step=1, key=f"edit_part_score_{source}_{selected_column}"))
-        if st.button("保存 Part 得分", key=f"save_part_{source}"):
-            ensure_reviewer()
-            old_value = record.get(selected_column) or 0
-            if new_value == old_value:
-                st.info("Part 得分未发生变化。")
-            else:
-                entry = append_audit(
-                    record, change_type="修正填涂分数", target=label,
-                    original_value=old_value, corrected_value=new_value,
-                )
-                apply_part_score(
-                    record, st.session_state.item_rows, selected_column, new_value,
-                    operator=st.session_state.reviewer,
-                    review_basis=st.session_state.review_basis,
-                    changed_at=entry["Changed At"],
-                )
-                refresh_status(record, students)
-                st.session_state.exports = None
-                persist_current_session()
-                st.success("Part 得分已重新保存。")
-                st.rerun()
-
-    editable_issues = [item for item in st.session_state.issues.get(source, []) if item.get("kind") != "part_empty" and item["key"] != "image"]
-    with st.expander("修改已人工确认的填涂", expanded=False):
-        if not editable_issues:
-            st.info("该卷没有可重新修改的 CHECK_MARK 填涂项。")
-        for item in editable_issues:
-            current = current_mark_choice(record, item)
-            options = ["空白", *item["choices"]]
-            selected = st.radio(item["title"], options, horizontal=True, index=options.index(current) if current in options else 0, key=f"reedit_choice_{source}_{item['key']}")
-            if st.button(f"保存 {item['title']} 修改", key=f"reedit_save_{source}_{item['key']}"):
-                ensure_reviewer()
-                before_value = current or "空白"
-                after_value = selected
-                entry = append_audit(
-                    record, change_type="修正填涂", target=item["title"],
-                    original_value=before_value, corrected_value=after_value,
-                )
-                apply_mark(
-                    record, st.session_state.item_rows, item, None if selected == "空白" else selected,
-                    operator=st.session_state.reviewer,
-                    review_basis=st.session_state.review_basis,
-                    changed_at=entry["Changed At"],
-                )
-                st.session_state.resolved.add(issue_key(source, item["key"]))
-                refresh_status(record, students)
-                st.session_state.exports = None
-                persist_current_session()
-                st.success(f"{item['title']} 已重新保存。")
-                st.rerun()
-
-    if st.button("关闭重新修改", key=f"close_edit_{source}"):
-        st.session_state.edit_source = None
-        st.session_state.edit_mode = None
-        st.rerun()
 
 
 initialize()
@@ -786,7 +779,6 @@ if st.button(scan_button_label, type="primary", disabled=not images):
     st.session_state.audit_log = []
     st.session_state.part_expand_notices = {}
     st.session_state.stable_review_sources = set()
-    st.session_state.edit_source, st.session_state.edit_mode = None, None
     progress = st.progress(0, text="正在准备扫描…")
     for index, path in enumerate(images, 1):
         progress.progress(index / len(images), text=f"正在处理 {index} / {len(images)}：{path.name}")
@@ -851,22 +843,6 @@ def render_review_workspace(students: dict, template: dict) -> None:
         opened, message = preview_notice
         (st.success if opened else st.error)(message)
 
-    edit_source = st.session_state.get("edit_source")
-    with st.expander("修改已完成记录（仅用于极少数更正）", expanded=bool(edit_source)):
-        st.caption("已完成的答题卡如发现误修，可在此选中文件后重新修改。")
-        selected_source = st.selectbox("选择答题卡文件", [record["Source Image"] for record in records], key="selected_record_for_edit")
-        if st.button("进入修改", key="open_selected_record"):
-            set_edit_source(selected_source, "modify")
-            st.rerun()
-        if edit_source:
-            edit_record = find_record(edit_source)
-            if edit_record is None:
-                st.warning("需要修改的扫描记录已不存在。")
-                st.session_state.edit_source = None
-                st.session_state.edit_mode = None
-            else:
-                render_modify_panel(edit_record, students)
-
     st.subheader("人工检查")
     st.info(f"👤 当前复核操作人：{st.session_state.reviewer.strip() or getpass.getuser()}　｜　答题卡图片复核")
     review_notice = st.session_state.pop("review_notice", None)
@@ -894,80 +870,9 @@ def render_review_workspace(students: dict, template: dict) -> None:
         for record in check_records:
             display_status = "已完成" if record["Status"] == "OK" else record["Status"]
             with st.expander(f"{display_status} · {record['Source Image']}", expanded=True):
-                source_path = Path(record["Source Path"])
-                if record["Status"] == "CHECK_ID":
-                    st.markdown("#### 基础信息")
-                    show_source_file_name(record, f"open_id_source_{record['Source Image']}")
-                    st.write(f"系统识别：`{record['Exam ID']}`")
-                    id_status = "无法匹配 Students List" if "?" not in str(record["Exam ID"]) else "考号无法完整识别"
-                    st.write(f"状态：{id_status}")
-                    st.markdown("#### 图片展示")
-                    id_image = cached_exam_id_crop(
-                        str(source_path), _source_version(source_path), template,
-                    )
-                    if id_image is not None:
-                        st.image(id_image, caption="考号区域", width=650)
-                    else:
-                        st.warning("无法生成考号区域截图；请查看整张答题卡。")
-                    card_image = cached_answer_card_preview(
-                        str(source_path), _source_version(source_path),
-                    )
-                    if card_image is not None:
-                        st.image(card_image, caption="整张答题卡", width=650)
-                    else:
-                        st.warning("无法读取原始答题卡图片。")
-                    st.markdown("#### 输入区域")
-                    recognized_id = str(record.get("Exam ID", ""))
-                    with st.form(f"exam_id_form_{record['Source Image']}", clear_on_submit=False):
-                        correct_id = st.text_input(
-                            "正确的 6 位 Exam ID",
-                            value=recognized_id if len(recognized_id) == 6 and recognized_id.isdigit() else "",
-                            key=f"id_{record['Source Image']}",
-                        )
-                        st.form_submit_button(
-                            "确认考号",
-                            on_click=save_exam_id_review,
-                            args=(record["Source Image"], students),
-                        )
-                    normalized_id = correct_id.strip()
-                    if len(normalized_id) == 6 and normalized_id.isdigit() and normalized_id not in students:
-                        with st.expander("考号识别正确，但原名单漏了该学生", expanded=False):
-                            st.caption("补全后只作为本批阅卷的后补学生，原始名单Excel不会被改写。")
-                            supplement_name = st.text_input("中文名", key=f"supplement_name_{record['Source Image']}")
-                            supplement_grade = st.text_input("年级", key=f"supplement_grade_{record['Source Image']}")
-                            supplement_branch = st.text_input("分校", key=f"supplement_branch_{record['Source Image']}")
-                            supplement_class = st.text_input("班级", key=f"supplement_class_{record['Source Image']}")
-                            supplement_session = st.text_input("笔试时间", key=f"supplement_session_{record['Source Image']}")
-                            supplement_ready = all(value.strip() for value in (
-                                supplement_name, supplement_grade, supplement_branch,
-                                supplement_class, supplement_session,
-                            ))
-                            if st.button("确认为后补学生", disabled=not supplement_ready, key=f"supplement_{record['Source Image']}"):
-                                ensure_reviewer()
-                                student_data = {
-                                    "Chinese Name": supplement_name.strip(),
-                                    "Year Level": supplement_grade.strip(),
-                                    "Branch": supplement_branch.strip(),
-                                    "Class": supplement_class.strip(),
-                                    "Exam Session": supplement_session.strip(),
-                                }
-                                entry = append_audit(
-                                    record, change_type="补全名单外学生", target="学生身份",
-                                    original_value=recognized_id, corrected_value=f"{normalized_id} / {supplement_name.strip()}",
-                                    note="原始名单中无该考号",
-                                )
-                                apply_student_supplement(
-                                    record, st.session_state.item_rows, student_data,
-                                    exam_id=normalized_id,
-                                    operator=st.session_state.reviewer,
-                                    review_basis=st.session_state.review_basis,
-                                    changed_at=entry["Changed At"],
-                                )
-                                refresh_status(record, students)
-                                st.session_state.exports = None
-                                persist_current_session()
-                                st.success("后补学生信息已保存。")
-                                st.rerun()
+                render_card_overview(record, template)
+                render_exam_identity_review(record, students)
+                st.markdown("#### 答题内容核对")
                 record_issues = st.session_state.issues.get(record["Source Image"], [])
                 unresolved_record_issues = [
                     item for item in record_issues
@@ -978,17 +883,6 @@ def render_review_workspace(students: dict, template: dict) -> None:
                     or unresolved_record_issues
                     or record["Source Image"] in st.session_state.stable_review_sources
                 ):
-                    st.markdown("#### 基础信息")
-                    show_source_file_name(record, f"open_mark_source_{record['Source Image']}")
-                    st.write(f"扫描状态：{record['Scan Result Status']}")
-                    st.markdown("#### 图片展示")
-                    card_image = cached_answer_card_preview(
-                        str(source_path), _source_version(source_path),
-                    )
-                    if card_image is not None:
-                        st.image(card_image, caption="整张答题卡", width=650)
-                    else:
-                        st.warning("无法读取原始答题卡图片。")
                     issues = record_issues
                     unresolved = [item for item in issues if issue_key(record["Source Image"], item["key"]) not in st.session_state.resolved]
                     warning = record.get("Low Answer Warning")
@@ -1078,11 +972,13 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                     on_click=save_mark_review,
                                     args=(record["Source Image"], item["key"], students, choice_widget_key),
                                 )
-                    if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
-                        st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
-                        if st.button("完成并收起本张", key=f"hide_completed_{record['Source Image']}"):
-                            st.session_state.stable_review_sources.discard(record["Source Image"])
-                            st.rerun()
+                else:
+                    st.caption("暂无需要人工复核的答题内容项目。")
+                if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
+                    st.success("本张答题卡已完成复核。为了避免保存时页面跳动，已完成题目暂时保留在原位。")
+                    if st.button("完成并收起本张", key=f"hide_completed_{record['Source Image']}"):
+                        st.session_state.stable_review_sources.discard(record["Source Image"])
+                        st.rerun()
 
     st.subheader("导出最终成绩文件")
     st.caption("自动保存只保存复核进度，不会生成成绩 Excel，也不会弹出“另存为”。只有点击下方按钮才会导出。")
@@ -1148,7 +1044,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
     if st.button("清空本次结果 / 开始新一批"):
         reset_review_widgets()
         delete_review_session(st.session_state.folder)
-        for key in ("records", "item_rows", "issues", "resolved", "confirmed_warnings", "exports", "show_checks", "edit_source", "edit_mode", "part_expand_notices", "stable_review_sources", "pending_image_rescan", "image_rescan_notice"):
+        for key in ("records", "item_rows", "issues", "resolved", "confirmed_warnings", "exports", "show_checks", "identity_notices", "part_expand_notices", "stable_review_sources", "pending_image_rescan", "image_rescan_notice"):
             st.session_state.pop(key, None)
         st.session_state.audit_log = []
         st.session_state.loaded_session_folder = ""

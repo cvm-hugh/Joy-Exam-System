@@ -8,13 +8,13 @@ from app.models import (AnswerItem, ExamSession, ScoreSection, TemplatePackage,
                         ValidationError, validate_answer_key)
 from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.roster_import import (ROSTER_COLUMNS, ROSTER_TEMPLATE_HEADERS,
-                               generate_roster_template, read_roster,
+                               generate_roster_template, normalize_exam_id, read_roster,
                                save_roster_snapshot)
 from app.review_store import (audit_entry, load_review_session,
                               save_review_session)
-from app.scanner import (RESULT_COLUMNS, RESULT_HEADER_LABELS, SUMMARY_SEPARATOR_COLUMN,
-                         export_results, update_review_flag, update_score_totals)
-from app.ui_helpers import (apply_mark, apply_student_supplement,
+from app.scanner import (PART_SCORE_COLUMNS, RESULT_COLUMNS, RESULT_HEADER_LABELS, SUMMARY_SEPARATOR_COLUMN,
+                         export_results, load_students, update_review_flag, update_score_totals)
+from app.ui_helpers import (apply_exam_id, apply_mark, apply_student_supplement,
                             open_original_in_preview, prepare_mark_review)
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from openpyxl import Workbook, load_workbook
@@ -32,6 +32,100 @@ def approved_template() -> TemplatePackage:
 
 
 class ModelTests(unittest.TestCase):
+    def test_s_student_number_normalization_matches_all_roster_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            for header in ("学号", "学 号", "Exam ID", "考号", "准考证号"):
+                with self.subTest(header=header):
+                    source = Path(temp) / "名单.xlsx"
+                    workbook = Workbook()
+                    workbook.active.append([header, "中文名"])
+                    workbook.active.append(["S10086", "测试学生"])
+                    workbook.save(source)
+                    imported = read_roster(source)
+                    self.assertEqual(imported.rows[0]["Exam ID"], "010086")
+                    self.assertEqual(imported.source_rows[0][0], "S10086")
+
+    def test_s_and_numeric_aliases_cannot_create_two_students(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "重复名单.xlsx"
+            workbook = Workbook()
+            workbook.active.append(["Exam ID", "Chinese Name"])
+            workbook.active.append(["S10086", "学生甲"])
+            workbook.active.append(["010086", "学生乙"])
+            workbook.save(source)
+            with self.assertRaisesRegex(ValidationError, "重复"):
+                read_roster(source)
+
+    def test_manual_identity_confirmation_accepts_s_and_numeric_ids(self) -> None:
+        student = {"Chinese Name": "测试学生", "Year Level": "六年级", "Branch": "测试分校",
+                   "Class": "测试班级", "Exam Session": "测试场次", "Original Exam ID": "S10086"}
+        for entered_id in ("010086", "S10086", " s10086 ", "10086"):
+            with self.subTest(entered_id=entered_id):
+                record = {"Source Image": "card.png", "Exam ID": "00?086", "Identity Issue": "考号识别异常",
+                          **{column: 0 for column in PART_SCORE_COLUMNS}}
+                item_rows = [{"Source Image": "card.png", "Exam ID": "00?086", "Section": "listening_part1", "Is Correct": "N"}]
+                valid, _ = apply_exam_id(record, item_rows, entered_id, {"010086": student}, operator="测试老师")
+                self.assertTrue(valid)
+                self.assertEqual(record["Exam ID"], "010086")
+                self.assertEqual(record["Original Exam ID"], "S10086")
+                self.assertEqual(item_rows[0]["Exam ID"], "010086")
+                self.assertEqual(record["Identity Issue"], "")
+
+    def test_unknown_identity_is_rejected_without_modifying_record(self) -> None:
+        record = {"Source Image": "card.png", "Exam ID": "00?086", "Identity Issue": "考号识别异常"}
+        original = dict(record)
+        valid, message = apply_exam_id(record, [], "S10086", {})
+        self.assertFalse(valid)
+        self.assertIn("010086", message)
+        self.assertIn("后补学生", message)
+        self.assertEqual(record, original)
+        self.assertEqual(normalize_exam_id("S100860"), "S100860")
+
+    def test_roster_snapshot_match_and_export_preserve_original_s_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for header in ("学号", "Exam ID", "考号"):
+                with self.subTest(header=header):
+                    source = root / "source.xlsx"
+                    workbook = Workbook()
+                    workbook.active.append([header, "姓名", "年级", "分校", "班级", "笔试时间"])
+                    workbook.active.append(["S10086", "测试学生", "六年级", "测试分校", "测试班级", "测试场次"])
+                    workbook.save(source)
+                    config = root / header
+                    save_roster_snapshot(source, config)
+                    record = {"Source Image": "card.png", "File Name": "card.png", "Exam ID": "00?086",
+                              "Identity Issue": "考号识别异常", **{column: 0 for column in PART_SCORE_COLUMNS}}
+                    with mock.patch("app.scanner.CONFIG_DIR", config):
+                        students = load_students()
+                        self.assertEqual(students["010086"]["Original Exam ID"], "S10086")
+                        valid, _ = apply_exam_id(record, [], "S10086", students)
+                        self.assertTrue(valid)
+                        result, _ = export_results([record], [], root, include_items=False)
+                    exported = load_workbook(result, read_only=True, data_only=True)
+                    rows = list(exported["成绩汇总"].iter_rows(values_only=True))
+                    self.assertEqual(rows[1][list(rows[0]).index(header)], "S10086")
+                    self.assertEqual(record["Exam ID"], "010086")
+                    exported.close()
+
+    def test_missing_student_s_identity_is_preserved_in_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "roster_source.xlsx"
+            workbook = Workbook()
+            workbook.active.append(["学号", "姓名", "年级", "分校", "班级", "笔试时间"])
+            workbook.active.append(["S10086", "测试学生", "六年级", "测试分校", "测试班级", "测试场次"])
+            workbook.save(source)
+            record = {"Source Image": "missing.png", "Exam ID": "00?999", "Identity Issue": "考号识别异常",
+                      **{column: 0 for column in PART_SCORE_COLUMNS}}
+            apply_student_supplement(record, [], {"Chinese Name": "后补学生", "Year Level": "六年级",
+                                     "Branch": "测试分校", "Class": "测试班级", "Exam Session": "测试场次"}, exam_id="S19999")
+            with mock.patch("app.scanner.CONFIG_DIR", root):
+                result, _ = export_results([record], [], root, include_items=False)
+            exported = load_workbook(result, read_only=True, data_only=True)
+            self.assertEqual(exported["成绩汇总"].cell(2, 1).value, "S19999")
+            self.assertEqual(record["Exam ID"], "019999")
+            exported.close()
+
     def test_unread_part2_and_part3_grader_scores_require_review_with_roi(self) -> None:
         template = {
             "score_part2": {"0": {"x": 1}, "1": {"x": 2}, "5": {"x": 3}},

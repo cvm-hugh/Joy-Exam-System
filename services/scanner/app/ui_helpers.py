@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from app.constants import CONFIG_DIR, FILL_THRESHOLD, OUTPUT_DIR
+from app.roster_import import normalize_exam_id
 from app.scanner import (RESULT_COLUMNS, _read_image, _read_one, export_results,
                          load_answer_key, scan_image, normalize, student_record,
                          update_review_flag, update_score_totals)
@@ -305,13 +306,14 @@ def apply_exam_id(
     review_basis: str = "",
     changed_at: str = "",
 ) -> tuple[bool, str]:
-    new_id = new_id.strip()
+    new_id = normalize_exam_id(new_id)
     if len(new_id) != 6 or not new_id.isdigit():
-        return False, "请填写 6 位数字考号。"
+        return False, "请填写 6 位数字考号或 S 开头的学号，例如 010086 或 S10086。"
     student = students.get(new_id)
     if student is None:
-        return False, "该考号不在当前学生名单中。"
+        return False, f"考号 {new_id} 不在当前学生名单中。请核对图片和本次名单；若名单漏了该学生，请补全后补学生信息。"
     old_id = record["Exam ID"]
+    record.pop("Original Exam ID", None)
     record.update(student_record(student, new_id))
     for row in item_rows:
         if row["Source Image"] == record["Source Image"]:
@@ -337,10 +339,12 @@ def apply_student_supplement(
     missing = [column for column in required if not str(student.get(column, "")).strip()]
     if missing:
         raise ValueError("请补齐姓名、年级、分校、班级和笔试时间。")
-    confirmed_exam_id = exam_id.strip() or str(record.get("Exam ID", "")).strip()
+    original_exam_id = exam_id.strip() or str(record.get("Exam ID", "")).strip()
+    confirmed_exam_id = normalize_exam_id(original_exam_id)
     if len(confirmed_exam_id) != 6 or not confirmed_exam_id.isdigit():
         raise ValueError("当前识别考号不是6位数字，请先修正考号。")
     record.update(student_record(student, confirmed_exam_id))
+    record["Original Exam ID"] = original_exam_id
     record["Identity Issue"] = ""
     record["Identity Confirmed"] = True
     for row in item_rows:

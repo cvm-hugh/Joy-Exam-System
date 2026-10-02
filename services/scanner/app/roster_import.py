@@ -93,16 +93,15 @@ def _display_name(value: str, source_header: str) -> str:
     return value
 
 
-def _exam_id(value: str, source_header: str) -> str:
+def normalize_exam_id(value: object) -> str:
     """教务原始名单用 S + 5 位数字，答题卡填涂的是 0 + 5 位数字。
 
     原 Excel 单元格仍原样保留；只对 App 内部匹配键进行转换。
     """
-    text = value.strip()
-    if _header_key(source_header) == _header_key("学号"):
-        match = re.fullmatch(r"[Ss](\d{5})", text)
-        if match:
-            return "0" + match.group(1)
+    text = _as_text(value)
+    match = re.fullmatch(r"[Ss]([0-9]{5})", text)
+    if match:
+        return "0" + match.group(1)
     if text.isdigit() and len(text) <= 6:
         return text.zfill(6)
     return text
@@ -162,10 +161,7 @@ def read_roster(path: Path) -> RosterImport:
         }
         exam_position = positions.get("Exam ID")
         if exam_position is not None:
-            row["Exam ID"] = _exam_id(
-                row["Exam ID"],
-                header[exam_position] if exam_position < len(header) else "",
-            )
+            row["Exam ID"] = normalize_exam_id(row["Exam ID"])
         if name_position is not None:
             row["Chinese Name"] = _display_name(
                 row["Chinese Name"],

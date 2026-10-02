@@ -8,9 +8,11 @@ try {
   const page = await browser.newPage({viewport: {width: 1280, height: 850}});
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.stack));
-  await page.goto(`http://127.0.0.1:${process.argv[2]}`);
-  const forms = page.locator('[data-testid="stForm"]');
-  await forms.nth(7).waitFor({timeout: 20000});
+  const scenario = process.env.JOY_IDENTITY_SCENARIO || 'marks';
+  await page.goto(`http://127.0.0.1:${process.argv[2]}?scenario=${scenario}`);
+  const forms = page.locator('[class*="st-key-review_anchor_"] [data-testid="stForm"]');
+  await page.getByRole('heading', {name: '基础信息', exact: true}).waitFor({timeout: 20000});
+  if (scenario !== 'id-only') await forms.nth(7).waitFor({timeout: 20000});
   if (process.env.JOY_TEST_ZOOM && process.env.JOY_TEST_ZOOM !== '100') {
     await page.getByRole('button', {name: '🔍 界面缩放'}).click();
     await page.getByText(`${process.env.JOY_TEST_ZOOM}%`, {exact: true}).click();
@@ -18,6 +20,56 @@ try {
     await page.waitForTimeout(400);
   }
   const fullRunBefore = await page.getByText(/^Full app runs: /).innerText();
+  const checkOverview = async () => {
+    assert.equal(await page.getByRole('heading', {name: '基础信息', exact: true}).count(), 1, 'Base information was duplicated.');
+    assert.equal(await page.getByRole('button', {name: /修改图片并重新识别/}).count(), 1, 'Image editing entry was duplicated.');
+    assert.equal(await page.getByText('修改已完成记录', {exact: true}).count(), 0, 'Unsupported completed-record editor remains.');
+    const identityHeading = page.getByRole('heading', {name: '考号核对', exact: true});
+    const answerHeading = page.getByRole('heading', {name: '答题内容核对', exact: true});
+    assert.equal(await identityHeading.evaluate(node => node.tagName), await answerHeading.evaluate(node => node.tagName), 'Identity and content review have different heading levels.');
+    const images = page.locator('[class*="st-key-review_images_"] [data-testid="stImage"]');
+    await images.nth(1).waitFor();
+    assert.equal(await images.count(), 2, 'The shared image group must have exactly two images.');
+    const left = await images.nth(0).boundingBox();
+    const right = await images.nth(1).boundingBox();
+    assert.ok(Math.abs(left.y - right.y) < 2 && left.x + left.width <= right.x, 'Exam ID crop and full card were not placed side by side.');
+  };
+  await checkOverview();
+  if (scenario !== 'marks') {
+    const identityInput = page.getByRole('textbox', {name: '正确考号或原始学号', exact: true});
+    const expectedId = scenario === 'missing' ? '019999' : '010086';
+    await identityInput.fill(scenario === 'known-numeric' ? '010086' : scenario === 'missing' ? 'S19999' : 'S10086');
+    await page.getByRole('button', {name: '确认考号', exact: true}).click();
+    if (scenario === 'missing') {
+      await page.getByText(/019999.*不在当前学生名单/).waitFor();
+      const supplement = page.locator('[data-testid="stForm"]').filter({has: page.getByRole('button', {name: '确认为后补学生', exact: true})});
+      await supplement.getByRole('button', {name: '确认为后补学生', exact: true}).click();
+      await page.getByText('请补齐姓名、年级、分校、班级和笔试时间。', {exact: true}).waitFor();
+      assert.equal(await identityInput.count(), 1, 'Incomplete supplement incorrectly confirmed identity.');
+      for (const [label, value] of [['中文名', '测试后补学生'], ['年级', '六年级'], ['分校', '测试分校'], ['班级', '测试班级'], ['笔试时间', '测试场次']]) {
+        await supplement.getByRole('textbox', {name: label, exact: true}).fill(value);
+      }
+      await supplement.getByRole('button', {name: '确认为后补学生', exact: true}).click();
+      await page.getByText(`考号 ${expectedId} 的后补学生信息已确认并保存。`, {exact: true}).waitFor();
+    } else {
+      await page.getByText(`考号 ${expectedId} 已匹配 测试S学生，并确认保存。`, {exact: true}).waitFor();
+    }
+    assert.equal(await identityInput.count(), 0, 'Identity confirmation left the pending form visible.');
+    await checkOverview();
+    assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore, 'Identity confirmation reran the whole app.');
+    if (process.env.JOY_IDENTITY_SCREENSHOT) {
+      await page.getByRole('heading', {name: '基础信息', exact: true}).scrollIntoViewIfNeeded();
+      await page.screenshot({path: process.env.JOY_IDENTITY_SCREENSHOT});
+    }
+    console.log(`Identity ${scenario}: confirmation, one shared overview, image columns and peer review headings verified.`);
+  }
+  if (scenario === 'id-only') {
+    assert.ok(await page.getByRole('button', {name: /^(导出并另存最终成绩|另存 Excel 备份)/}).isEnabled(), 'Identity-only review kept export disabled.');
+    await page.getByRole('button', {name: '完成并收起本张', exact: true}).click();
+    await page.getByText('本批次没有需要人工检查的项目。', {exact: true}).waitFor();
+    assert.deepEqual(pageErrors, [], 'Browser errors occurred.');
+    console.log('Identity-only card remained visible after confirmation and closed explicitly.');
+  } else {
   const form = forms.nth(4);
   const next = forms.nth(5);
   await next.getByText('C', {exact: true}).click();
@@ -32,7 +84,7 @@ try {
     window.__reviewMeasurements = [];
     const start = performance.now();
     const tick = () => {
-      const form = document.querySelectorAll('[data-testid="stForm"]')[4];
+      const form = document.querySelectorAll('[class*="st-key-review_anchor_"] [data-testid="stForm"]')[4];
       window.__reviewMeasurements.push({time: performance.now() - start, top: form?.getBoundingClientRect().top, y: document.querySelector('[data-testid="stMain"]').scrollTop});
       if (performance.now() - start < 2200) requestAnimationFrame(tick);
     };
@@ -45,7 +97,7 @@ try {
   const samples = await page.evaluate(() => window.__reviewMeasurements);
   const maxDeviation = Math.max(...samples.map(sample => Math.abs((sample.top ?? before.top) - before.top)));
   const nextChoice = await next.getByRole('radio', {name: 'C', exact: true}).isChecked();
-  console.log(JSON.stringify({before, after, maxDeviation, nextUnsavedChoicePreserved: nextChoice, ...(process.env.JOY_REVIEW_TRACE ? {...(process.env.JOY_REVIEW_TRACE ? {samples: samples.filter((_, i) => i % 15 === 0)} : {})} : {})}, null, 2));
+  console.log(JSON.stringify({before, after, maxDeviation, nextUnsavedChoicePreserved: nextChoice, ...(process.env.JOY_REVIEW_TRACE ? {samples: samples.filter((_, i) => i % 15 === 0)} : {})}, null, 2));
   assert.ok(maxDeviation <= 1, 'Saved form moved vertically.');
   assert.ok(nextChoice, 'An unsaved choice in another form was lost.');
   assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore, 'Single-question save reran the whole app.');
@@ -94,6 +146,8 @@ try {
   assert.equal(await page.getByText(/^Full app runs: /).innerText(), fullRunBefore, 'Review save reran the whole app.');
   assert.deepEqual(pageErrors, [], 'Browser errors occurred.');
   console.log('All eight questions saved; keyboard submit, user scrolling, export state and fragment-only updates verified without browser errors.');
+  await checkOverview();
+  }
 } finally {
   await browser.close();
 }
