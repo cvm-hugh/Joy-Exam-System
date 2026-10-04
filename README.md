@@ -1,6 +1,8 @@
 # 佳音考试管理
 
-当前发布版本：**V2.0（2.0.0）**。本轮集中阅卷状态操作、拆分 API 请求处理与 Excel 导出辅助代码，并加入 Python 源码静态编译检查。说明见 `docs/代码整理_2026-10-04.md`、`docs/V2.0发布说明_2026-10-04.md`。
+当前稳定发布版本：**V2.0（2.0.0）**。该版本集中阅卷状态操作、拆分 API 请求处理与 Excel 导出辅助代码，并加入 Python 源码静态编译检查。说明见 `docs/代码整理_2026-10-04.md`、`docs/V2.0发布说明_2026-10-04.md`。
+
+Windows 桌面预览版：**2.1.0-beta.1**，目标为 **Windows 10 / Windows 11 x64**。提供 EXE 安装程序和完整目录 ZIP，内置运行环境，使用者无需另装 Python/Node；实际 Win10/11 人工验收待进行。V2.0 稳定版的标签和发布材料继续保留。安装、数据与构建说明见 [Windows 桌面预览版](docs/windows-desktop.md)。
 
 自 2026-10-02 起，本项目是唯一后续维护主线。阅卷和结果管理的源码、测试、配置、桌面入口与构建脚本均在此目录内维护；原有独立 App 保留为历史版本与回退材料。
 
@@ -10,7 +12,7 @@
 
 ## 项目结构
 
-- `desktop/`：唯一维护的 macOS 桌面入口。
+- `desktop/`：macOS 桌面入口与 `desktop/windows/` 下的 Windows 桌面入口。
 - `services/scanner/`：阅卷源码、资源、数据模型与测试。
 - `services/results/`：结果管理源码、数据库结构、报告、小程序与测试。
 - `scripts/`：统一安装、启动、检查、测试和构建入口。
@@ -21,7 +23,7 @@
 
 ## 从源码恢复
 
-需要 Python 3.12 和 Node.js 22.13 或以上版本；本机验证版本记录在 `.python-version` 与 `.node-version`。
+macOS 开发环境需要 Python 3.12 和 Node.js 22.13 或以上版本；本机验证版本记录在 `.python-version` 与 `.node-version`。以下为 macOS 开发入口；Windows 构建环境与命令见 [Windows 桌面预览版](docs/windows-desktop.md)。
 
 ```sh
 npm run setup
@@ -41,7 +43,11 @@ npm run desktop:build
 
 `npm run start` 启动本机两个服务，阅卷端口 `8510`、结果端口 `3010`，均监听 `127.0.0.1`。双击 `output/佳音考试管理.app` 则由原生窗口承载同一服务。关闭 App 后结束由该 App 启动的服务。
 
-当前生成的是供本机开发与验收使用的 App：它依赖本项目目录和本机的 Python/Node 基础解释器。面向其他电脑的完整运行环境封装、签名、公证及 Windows 桌面壳属于下一阶段发布工作，不能将开发 ZIP 当作已完成跨设备分发的安装包。
+macOS 的 `desktop:build` 当前仍生成供本机开发与验收使用的 App，依赖本项目目录和本机的 Python/Node 基础解释器。其他 Mac 的完整运行环境封装、签名和公证属于后续发布工作；现有 macOS 开发 ZIP 保持这一适用范围。
+
+Windows 的构建入口为 `npm run desktop:build:windows`，需在 Windows x64 环境运行，生成内置运行环境的安装程序和 ZIP 包，输出到 `output/windows/`。当前版本为 2.1.0-beta.1 预览版，实际 Win10/11 人工验收待进行。Windows 源码安装及构建命令见 [Windows 桌面预览版](docs/windows-desktop.md)。
+
+Windows 应用数据按账户独立保存在 `%APPDATA%\佳音考试管理\runtime`，卸载会保留数据；原始照片仍保存在用户选择的目录，备份时应与运行数据、已导出文件一并保存。日志位于该数据目录的 `logs\desktop.log`，可从窗口“数据目录”打开。
 
 源码目录移动后，重新运行安装和构建；Python 虚拟环境本身不作为可搬运的安装包。
 

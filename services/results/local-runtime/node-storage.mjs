@@ -57,7 +57,9 @@ export class SqliteDatabase {
       this.sqlite.exec('COMMIT');
       return results;
     } catch (error) {
-      this.sqlite.exec('ROLLBACK');
+      // SQLite can already have rolled back on disk, I/O, or memory errors.
+      // A failed cleanup must not replace the original transaction failure.
+      try { this.sqlite.exec('ROLLBACK'); } catch {}
       throw error;
     }
   }
