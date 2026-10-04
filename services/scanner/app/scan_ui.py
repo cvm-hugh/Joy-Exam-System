@@ -828,7 +828,9 @@ def expand_part_review(source_image: str, item_key: str, students: dict) -> None
 
 initialize()
 render_display_controls()
-with st.container(key="scanner_workbench") as workbench:
+# 保存 container() 返回的容器；其 __enter__() 不返回可复用对象。
+workbench = st.container(key="scanner_workbench")
+with workbench:
     st.title("佳音考试管理 · 阅卷")
     ensure_runtime_config()
     if st.session_state.view == "setup":
