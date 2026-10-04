@@ -74,7 +74,7 @@ jobs:
               with archive.open('佳音考试管理.exe') as stream:
                   header = stream.read(4096)
               offset = struct.unpack_from('<I', header, 0x3c)[0]
-              if header[:2] != b'MZ' or header[offset:offset+4] != b'PE\\x00\\x00' or struct.unpack_from('<H', header, offset+4)[0] != 0x8664:
+              if header[:2] != b'MZ' or list(header[offset:offset+4]) != [80, 69, 0, 0] or struct.unpack_from('<H', header, offset+4)[0] != 0x8664:
                   raise ValueError('Packaged app is not Windows x64')
               inspection = {'checksums': 'matched', 'runtimeFiles': 'present', 'userData': 'excluded', 'appArchitecture': 'x64', 'archiveEntries': len(names)}
           for directory in ['installer', 'portable']:
