@@ -271,6 +271,7 @@ export function dimensionCoefficientFileName(sourceFileName: string, includeScor
   const original = sourceFileName.split(/[\\/]/).pop() ?? '';
   const printable = Array.from(original, (character) => character.charCodeAt(0) < 32 ? '_' : character).join('');
   const stem = printable.replace(/\.(xlsx?|csv)$/i, '')
+    .replace(/(?:[\s_-]*(?:六维系数|六维得分系数|6维得分系数|详细得分))+$/u, '')
     .replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/g, '').trim() || '学生名单';
   // Leave room for the suffix within common filesystem filename limits.
   let base = '';
