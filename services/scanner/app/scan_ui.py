@@ -25,7 +25,8 @@ from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.constants import CONFIG_DIR, ensure_runtime_config
 from app.review_scroll import install_review_scroll_lock
 from app.review_navigation import (EXPORT_TARGET_KEY, PENDING_REVIEW_STATUSES,
-                                   first_pending_review_key, review_card_key, review_panel_key)
+                                   first_pending_review_key, review_answers_key,
+                                   review_card_key, review_item_key, review_panel_key)
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, save_roster_snapshot
 from app.student_information import student_information_issues
@@ -791,6 +792,12 @@ def expand_part_review(source_image: str, item_key: str, students: dict) -> None
         st.session_state.stable_review_sources.add(source_image)
         message = f"{item['title']} 的题目已全部确认，已保留保存结果并清除过期空白提示。"
     st.session_state.part_expand_notices[source_image] = message
+    # 展开停留在本 Part 的第一道待确认题目，使用新的导航令牌覆盖此前收起动作。
+    st.session_state.review_navigation = {
+        "target": review_item_key(source_image, pending_questions[0]["key"])
+        if pending_questions else review_answers_key(source_image),
+        "token": uuid.uuid4().hex,
+    }
     refresh_status(record, students)
     st.session_state.exports = None
     persist_current_session()
@@ -994,7 +1001,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
                     render_card_overview(record, template)
                 with st.container(key=f"review_identity_{record['Source Image']}"):
                     render_exam_identity_review(record, students)
-                with st.container(key=f"review_answers_{record['Source Image']}"):
+                with st.container(key=review_answers_key(record["Source Image"])):
                     st.markdown("#### 答题内容核对")
                     record_issues = st.session_state.issues.get(record["Source Image"], [])
                     unresolved_record_issues = [
@@ -1031,7 +1038,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
                         for item in display_issues:
                             # 单题整套内容在同一替换槽内更新，避免提示改变时控件错位。
                             item_slot = st.empty()
-                            with item_slot.container(key=f"review_item_{record['Source Image']}_{item['key']}"):
+                            with item_slot.container(key=review_item_key(record["Source Image"], item["key"])):
                                 item_is_resolved = issue_key(record["Source Image"], item["key"]) in st.session_state.resolved
                                 st.markdown("---")
                                 if item.get("kind") == "part_empty":

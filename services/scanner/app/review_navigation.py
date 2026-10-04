@@ -1,4 +1,4 @@
-"""Stable review targets that respect manually collapsed answer cards."""
+"""Stable review targets for answer cards, answer areas and individual items."""
 from collections.abc import Collection
 from hashlib import sha256
 
@@ -14,6 +14,16 @@ def review_card_key(source_image: str) -> str:
 
 def review_panel_key(source_image: str) -> str:
     return "review_panel_" + sha256(source_image.encode("utf-8")).hexdigest()
+
+
+def review_answers_key(source_image: str) -> str:
+    return "review_answers_" + sha256(source_image.encode("utf-8")).hexdigest()
+
+
+def review_item_key(source_image: str, item_key: str) -> str:
+    # Keep targets valid as CSS classes even when filenames contain spaces or punctuation.
+    identity = f"{source_image}\0{item_key}"
+    return "review_item_" + sha256(identity.encode("utf-8")).hexdigest()
 
 
 def first_pending_review_key(records: list[dict], closed_sources: Collection[str] = ()) -> str:

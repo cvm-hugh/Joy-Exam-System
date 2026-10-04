@@ -16,6 +16,7 @@
     handledToken: previous?.handledToken || '',
   };
   const submitLabels = new Set(['保存该项修正', '修改并重新保存']);
+  const expandLabels = new Set(['逐题检查', '改为逐题检查']);
   const cancel = () => {
     controller.pending = null;
     controller.navigation = null;
@@ -24,16 +25,23 @@
   };
   const restore = () => {
     controller.frame = 0;
-    const saved = controller.navigation || controller.pending;
+    let saved = controller.navigation || controller.pending;
     if (!saved || Date.now() > saved.expires) return cancel();
-    const form = doc.getElementsByClassName(saved.targetClass || saved.formClass)[0];
+    let form = doc.getElementsByClassName(saved.targetClass || saved.formClass)[0];
+    const navigating = Boolean(controller.navigation && form);
+    // Preserve the old Part position until its first expanded question mounts.
+    if (!form && controller.navigation && controller.pending?.action === 'expand'
+        && Date.now() <= controller.pending.expires) {
+      saved = controller.pending;
+      form = doc.getElementsByClassName(saved.formClass)[0];
+    }
     const scroller = doc.querySelector('[data-testid="stMain"]') || doc.scrollingElement;
     // Wait for the requested element to mount before changing the scroll position.
     if (form && scroller) {
       const delta = form.getBoundingClientRect().top - saved.top;
       if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
-      if (controller.navigation && !form.contains(doc.activeElement)) {
-        const heading = form.querySelector('summary, h1, h2, h3, h4');
+      if (navigating && !form.contains(doc.activeElement)) {
+        const heading = form.querySelector('summary, h1, h2, h3, h4') || form;
         if (heading) {
           if (heading.tagName !== 'SUMMARY') heading.setAttribute('tabindex', '-1');
           heading.focus({preventScroll: true});
@@ -49,7 +57,7 @@
     const targetClass = request?.dataset.target;
     if (!token || !targetClass || token === controller.handledToken) return;
     controller.handledToken = token;
-    controller.pending = null;
+    if (controller.pending?.action !== 'expand') controller.pending = null;
     controller.navigation = {targetClass, top: 84, expires: Date.now() + 5000};
     if (!controller.frame) controller.frame = win.requestAnimationFrame(restore);
   };
@@ -58,6 +66,19 @@
   const observer = new win.MutationObserver(readNavigation);
   observer.observe(doc.body, {childList: true, subtree: true, attributes: true,
                              attributeFilter: ['data-target', 'data-token']});
+  const captureAnchor = (element, classPrefix, action) => {
+    let form = element;
+    let formClass;
+    while (form && form !== doc.body) {
+      formClass = [...form.classList].find(name => name.startsWith(classPrefix));
+      if (formClass) break;
+      form = form.parentElement;
+    }
+    if (!formClass) return cancel();
+    controller.navigation = null;
+    controller.pending = {formClass, action, top: form.getBoundingClientRect().top, expires: Date.now() + 5000};
+    if (!controller.frame) controller.frame = win.requestAnimationFrame(restore);
+  };
   const capture = (event) => {
     const target = event.target instanceof win.Element ? event.target : null;
     const button = target?.closest('button');
@@ -65,21 +86,15 @@
       if (!['Enter', ' '].includes(event.key)) return cancel();
       if (event.key === ' ' && !button) return cancel();
     }
+    if (button && expandLabels.has(button.innerText.trim())) {
+      if (button.disabled) return cancel();
+      return captureAnchor(button, 'st-key-review_item_', 'expand');
+    }
     const formElement = target?.closest('[data-testid="stForm"]');
     const submitButton = button || (event.type === 'keydown' && event.key === 'Enter'
       ? [...(formElement?.querySelectorAll('button') || [])].find(node => submitLabels.has(node.innerText.trim())) : null);
     if (!submitButton || !submitLabels.has(submitButton.innerText.trim()) || submitButton.disabled) return cancel();
-    let form = submitButton;
-    let formClass;
-    while (form && form !== doc.body) {
-      formClass = [...form.classList].find(name => name.startsWith('st-key-review_anchor_'));
-      if (formClass) break;
-      form = form.parentElement;
-    }
-    if (!formClass) return cancel();
-    controller.navigation = null;
-    controller.pending = {formClass, top: form.getBoundingClientRect().top, expires: Date.now() + 5000};
-    if (!controller.frame) controller.frame = win.requestAnimationFrame(restore);
+    captureAnchor(submitButton, 'st-key-review_anchor_', 'save');
   };
   const listeners = [
     ['pointerdown', capture], ['keydown', capture],
