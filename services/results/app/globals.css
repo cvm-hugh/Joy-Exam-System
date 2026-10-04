@@ -583,6 +583,74 @@
   }
 }
 
+/* Staff controls wrap the shared report pages; exported pages keep their own layout. */
+.student-report-preview {
+  min-width: 0;
+  scroll-margin-top: 20px;
+}
+.student-preview-toolbar,
+.student-preview-controls,
+.student-preview-layout,
+.student-preview-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.student-preview-toolbar,
+.student-preview-footer {
+  justify-content: space-between;
+}
+.student-preview-toolbar h2 {
+  margin: 0;
+}
+.student-preview-layout {
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.student-preview-hint {
+  display: block;
+  margin: 14px 0;
+}
+.student-preview-viewport {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  padding: 4px 4px 14px;
+}
+.student-preview-viewport:focus-visible {
+  outline: 2px solid #24684f;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.student-report-preview .parent-preview.report-preview-shell {
+  width: auto;
+  margin: 0;
+}
+.student-report-preview[data-layout='horizontal'] .standard-report-pages {
+  display: flex;
+  flex-direction: row;
+  width: max-content;
+}
+.student-report-preview[data-layout='horizontal'] .standard-report-page {
+  flex: 0 0 390px;
+}
+.student-report-preview[data-layout='vertical'] .standard-report-pages {
+  display: grid;
+  width: 390px;
+  margin: 0 auto;
+}
+.student-preview-footer {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e3e9e5;
+}
+
 /* Teaching configuration is a nested paper workspace, separate from exam operations. */
 .nav-group + .nav-group {
   margin-top: 22px;

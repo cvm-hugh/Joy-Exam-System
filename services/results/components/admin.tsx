@@ -28,6 +28,7 @@ import { StudentInformationEditor, type InformationStudent } from './student-inf
 import { normalizeYearLevel, studentInformationIssues, type StudentInformationSummary } from '@/lib/student-information';
 import { ReportExport } from './report-export';
 import { ReportPages } from './report-pages';
+import { StudentReportPreview, type StudentPreviewLayout } from './student-report-preview';
 import { api, RequestError } from '@/lib/client';
 import { TemplateSelect } from './template-library';
 import { PaperWorkspace } from './paper-workspace';
@@ -132,6 +133,7 @@ function AdminScreen() {
   const [name, setName] = useState('');
   const [examNo, setExamNo] = useState('');
   const [result, setResult] = useState<Result | null>(null);
+  const [studentPreviewLayout, setStudentPreviewLayout] = useState<StudentPreviewLayout>('horizontal');
   const [students, setStudents] = useState<
     { examNo: string; name: string; total: string; branch?: string; className?: string; examSession?: string; yearLevel?: string }[]
   >([]);
@@ -513,6 +515,7 @@ function AdminScreen() {
                           onClick={() => {
                             setName(s.name);
                             setExamNo(s.examNo);
+                            setResult(null);
                             setTab('students');
                             void act(async () =>
                               setResult(
@@ -953,7 +956,13 @@ function AdminScreen() {
                   </div>
                 </form>
               </section>
-              {result && <ResultView result={result} />}
+              {result && (
+                <StudentReportPreview
+                  result={result}
+                  layout={studentPreviewLayout}
+                  onLayoutChange={setStudentPreviewLayout}
+                />
+              )}
               <div style={{ marginTop: 24 }}>{studentTable}</div>
             </>
           )}
