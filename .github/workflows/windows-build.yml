@@ -1,0 +1,57 @@
+name: Windows package
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Windows source branch or commit
+        required: true
+        default: codex/windows-portability
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            services/results/package-lock.json
+            desktop/windows/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: services/scanner/requirements-lock.txt
+      - name: Install build dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          npm --prefix services/results ci --no-audit --no-fund
+          npm --prefix desktop/windows ci --no-audit --no-fund
+      - name: Build installer and portable package
+        run: npm run desktop:build:windows
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: Joy-Exam-System-Windows-x64
+          path: |
+            output/windows/*-Setup.exe
+            output/windows/*.zip
+            output/windows/SHA256SUMS.txt
+            output/windows/build-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
