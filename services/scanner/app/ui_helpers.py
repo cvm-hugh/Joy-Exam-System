@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import subprocess
-from shutil import copy2
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ import cv2
 import numpy as np
 
 from app.constants import CONFIG_DIR, FILL_THRESHOLD, OUTPUT_DIR
+from app.platform_files import choose_folder, open_original_image, save_as
 from app.roster_import import normalize_exam_id
 from app.scanner import (RESULT_COLUMNS, _read_image, _read_one, export_results,
                          load_answer_key, scan_image, normalize, student_record,
@@ -61,47 +61,17 @@ def required_files() -> dict[str, Path]:
     return {"学生名单": CONFIG_DIR / "student_list.xlsx", "答题卡模板": CONFIG_DIR / "template.json", "标准答案": CONFIG_DIR / "answer_key.json"}
 
 
+# 保留历史 Python 调用入口；界面改用平台无关的文件操作。
 def choose_macos_folder() -> str | None:
-    script = 'POSIX path of (choose folder with prompt "选择答题卡照片所在文件夹")'
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
-    return result.stdout.strip().rstrip("/") if result.returncode == 0 else None
+    return choose_folder()
 
 
 def save_as_macos(source_file: Path, default_name: str | None = None) -> Path | None:
-    """通过 macOS 原生“另存为”对话框复制导出文件；取消时返回 None。"""
-    suggested_name = (default_name or source_file.name).replace("\\", "\\\\").replace('"', '\\"')
-    script = f'POSIX path of (choose file name with prompt "另存最终成绩" default name "{suggested_name}")'
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        return None
-    destination = Path(result.stdout.strip())
-    if destination.suffix.lower() != ".xlsx":
-        destination = destination.with_suffix(".xlsx")
-    if destination.exists():
-        raise FileExistsError(f"目标文件已存在：{destination.name}。请在另存为对话框中使用其他文件名。")
-    copy2(source_file, destination)
-    return destination
+    return save_as(source_file, default_name)
 
 
 def open_original_in_preview(source_file: Path) -> tuple[bool, str]:
-    """用 macOS“预览”直接打开扫描时使用的原始图片。"""
-    if not source_file.is_file():
-        return False, f"找不到原始图片：{source_file}"
-    try:
-        result = subprocess.run(
-            # -n starts an isolated Preview instance; -F prevents macOS from
-            # restoring the images that were open in the previous instance.
-            ["open", "-n", "-F", "-a", "Preview", str(source_file)],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"无法打开原始图片：{exc}"
-    if result.returncode != 0:
-        detail = result.stderr.strip() or "macOS 未能启动“预览”。"
-        return False, f"无法打开原始图片：{detail}"
-    return True, f"已用“预览”打开原始图片：{source_file.name}。可直接编辑后保存。"
+    return open_original_image(source_file)
 
 
 def image_paths(folder: Path) -> list[Path]:

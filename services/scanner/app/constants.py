@@ -1,7 +1,7 @@
 """V3 运行目录。
 
 应用程序包只提供只读的初始资源；用户实际使用的模板、名单和答案都复制到
-当前 Mac 的 Application Support 中，因此更新 .app 不会覆盖考试数据。
+本机用户数据目录中，因此更新应用程序不会覆盖考试数据。
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 APP_NAME = "佳音考试管理"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # 开发和自动验证可通过专用环境变量使用隔离目录；普通用户双击 App 时
-# 没有该变量，始终使用本机 Application Support 中的独立考试数据。
+# 没有该变量，始终使用本机用户数据目录中的独立考试数据。
 if sys.platform == "darwin":
     _default_user_data_dir = Path.home() / "Library" / "Application Support" / APP_NAME / "scanner"
 elif os.name == "nt":

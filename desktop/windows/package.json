@@ -1,0 +1,43 @@
+{
+  "name": "joy-exam-windows",
+  "version": "2.1.0-beta.1",
+  "private": true,
+  "description": "佳音考试管理 Windows 桌面程序",
+  "author": "Joy Education",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-builder --win nsis zip --x64 --publish never",
+    "check": "node --check main.cjs && node --check preload.cjs"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.joyeducation.exam-management.unified",
+    "productName": "佳音考试管理",
+    "directories": { "output": "../../output/windows", "buildResources": "build" },
+    "files": ["main.cjs", "preload.cjs", "shell.html", "shell.cjs", "package.json"],
+    "extraResources": [{ "from": "build/runtime", "to": "runtime", "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc"] }],
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "zip", "arch": ["x64"] }],
+      "artifactName": "Joy-Exam-System-${version}-Windows-x64.${ext}",
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "artifactName": "Joy-Exam-System-${version}-Windows-x64-Setup.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "佳音考试管理",
+      "runAfterFinish": false
+    }
+  }
+}

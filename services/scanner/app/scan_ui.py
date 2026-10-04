@@ -5,7 +5,6 @@ import getpass
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -31,12 +30,13 @@ from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, roster_source_filename, save_roster_snapshot
 from app.student_information import student_information_issues
 from app.review_store import delete_review_session, load_review_session
-from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, load_students, load_template, update_score_totals
-from app.ui_helpers import (answer_card_preview, choose_macos_folder,
-                            exam_id_crop, image_paths, issue_key, low_answer_warning,
-                            open_original_in_preview,
-                            prepare_mark_review, required_files, review_item_title,
-                            save_as_macos, save_current_results, scan_one)
+from app.platform_files import (choose_folder, image_editor_label, open_local_file,
+                                open_original_image, save_as)
+from app.scanner import (RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results,
+                         load_students, load_template, update_score_totals)
+from app.ui_helpers import (answer_card_preview, exam_id_crop, image_paths, issue_key,
+                            low_answer_warning, prepare_mark_review, required_files,
+                            review_item_title, save_current_results, scan_one)
 
 st.set_page_config(page_title="佳音考试管理 · 阅卷", layout="wide")
 st.markdown(
@@ -137,7 +137,7 @@ def persist_current_session() -> None:
 
 
 def ensure_reviewer() -> str:
-    """人工修正必须留下操作人；界面未填时使用当前 Mac 账户。"""
+    """人工修正必须留下操作人；界面未填时使用当前系统账户。"""
     return review_session().ensure_reviewer()
 
 
@@ -184,7 +184,7 @@ def render_roster_setup() -> None:
     st.caption("模板保留原始名单的全部列；“精修笔试通过”和六维得分系数在本阶段留空，由结果管理系统后续填入。")
     if st.button("生成《学业水平测试统计名单-模板》"):
         generate_roster_template(roster_template)
-        opened = subprocess.run(["open", str(roster_template)], capture_output=True).returncode == 0
+        opened = open_local_file(roster_template)[0]
         message = "学生名单模板已生成并打开。" if opened else f"已生成：{roster_template}"
         st.success(message)
     uploaded = st.file_uploader("选择学生名单 .xlsx", type=["xlsx"], key="roster_upload")
@@ -217,7 +217,7 @@ def render_answer_setup(template: dict) -> None:
     st.info("正确答案不包含在 App 中。请先生成答案录入表，填写后再导入。")
     if st.button("生成答案录入 Excel 模板", type="primary"):
         generate_answer_key_template(package, answer_template)
-        opened = subprocess.run(["open", str(answer_template)], capture_output=True).returncode == 0
+        opened = open_local_file(answer_template)[0]
         if opened:
             st.success("答案录入模板已生成并打开。填写 Correct Answer 列后保存，再回到此处导入。")
         else:
@@ -283,15 +283,19 @@ def render_exam_setup() -> None:
         folder_text = st.text_input(
             "答题卡照片所在目录",
             value=st.session_state.folder,
-            placeholder="例如：/Users/你的用户名/Desktop/本次定位测照片",
+            placeholder="答题卡照片文件夹的完整路径",
         )
     with chooser_col:
         st.write("")
         if st.button("选择文件夹", width="stretch", key="setup_choose_folder"):
-            selected = choose_macos_folder()
-            if selected:
-                st.session_state.folder = selected
-                st.rerun()
+            try:
+                selected = choose_folder(st.session_state.folder)
+            except OSError as exc:
+                st.error(f"无法选择文件夹：{exc}")
+            else:
+                if selected:
+                    st.session_state.folder = selected
+                    st.rerun()
     if folder_text != st.session_state.folder:
         st.session_state.folder = folder_text
     folder = Path(st.session_state.folder).expanduser() if st.session_state.folder else None
@@ -332,7 +336,7 @@ def open_result_source_image() -> None:
     if not isinstance(row_index, int) or not 0 <= row_index < len(records):
         st.session_state.preview_notice = (False, "无法定位该条扫描记录。")
         return
-    st.session_state.preview_notice = open_original_in_preview(Path(records[row_index]["Source Path"]))
+    st.session_state.preview_notice = open_original_image(Path(records[row_index]["Source Path"]))
 
 
 def rescan_modified_source(record: dict, template_data: dict, student_data: dict) -> None:
@@ -381,11 +385,11 @@ def show_source_file_name(record: dict, key: str) -> None:
         "等待图片保存…" if is_waiting else "修改图片并重新识别",
         key=f"edit_rescan_{key}",
         disabled=is_waiting,
-        help="用 Mac“预览”打开原图；保存修改后，软件会自动重新识别本张。",
+        help=f"用{image_editor_label()}打开原图；保存修改后，软件会自动重新识别本张。",
     ):
         path = Path(record["Source Path"])
         baseline = path.stat().st_mtime_ns if path.is_file() else 0
-        opened, message = open_original_in_preview(path)
+        opened, message = open_original_image(path)
         if not opened:
             st.error(message)
         else:
@@ -395,7 +399,7 @@ def show_source_file_name(record: dict, key: str) -> None:
             }
             st.session_state.image_rescan_notice = (
                 "info",
-                f"已打开 {record['File Name']}。请在“预览”中修改并保存；检测到保存后将自动重新识别。",
+                f"已打开 {record['File Name']}。请在{image_editor_label()}中修改，并保存到原路径和原文件名；检测到保存后将自动重新识别。",
             )
             st.rerun()
     st.caption("修改并保存原图后，软件只重新识别本张，不重扫整批。")
@@ -403,7 +407,7 @@ def show_source_file_name(record: dict, key: str) -> None:
 
 @st.fragment(run_every="1s")
 def watch_pending_image_rescan(template_data: dict, student_data: dict) -> None:
-    """监视“预览”中的原图保存，变更后自动重识别。"""
+    """监视图片编辑器中的原图保存，变更后自动重识别。"""
     pending = st.session_state.get("pending_image_rescan")
     if not pending:
         return
@@ -636,14 +640,18 @@ with workbench:
     st.subheader("选择照片目录")
     directory_col, chooser_col = st.columns([5, 1])
     with directory_col:
-        folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="例如：/Users/你的用户名/Desktop/8月23日定位测照片")
+        folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="答题卡照片文件夹的完整路径")
     with chooser_col:
         st.write("")
         if st.button("选择文件夹", width="stretch"):
-            selected = choose_macos_folder()
-            if selected:
-                st.session_state.folder = selected
-                st.rerun()
+            try:
+                selected = choose_folder(st.session_state.folder)
+            except OSError as exc:
+                st.error(f"无法选择文件夹：{exc}")
+            else:
+                if selected:
+                    st.session_state.folder = selected
+                    st.rerun()
     folder = Path(folder_text).expanduser() if folder_text else None
     if folder_text != st.session_state.folder:
         st.session_state.folder = folder_text
@@ -730,9 +738,9 @@ def render_review_workspace(students: dict, template: dict) -> None:
         if st.session_state.reviewer.strip():
             st.success(f"当前操作人：{st.session_state.reviewer.strip()}（下方所有人工修正都将记录此姓名）")
         else:
-            st.error(f"尚未填写姓名；如直接修正，系统将记录当前 Mac 账户“{getpass.getuser()}”。")
+            st.error(f"尚未填写姓名；如直接修正，系统将记录当前系统账户“{getpass.getuser()}”。")
     st.subheader("处理结果")
-    st.caption("点击 File Name 可用 Mac“预览”打开对应的原始图片，并可直接编辑后保存。")
+    st.caption(f"点击 File Name 可用{image_editor_label()}打开对应的原始图片，并可直接编辑后保存。")
     shown_columns = [column for column in RESULT_COLUMNS if column != SUMMARY_SEPARATOR_COLUMN]
     shown_columns.extend(("Needs Review", "Review Reason", "Status"))
     st.dataframe(
@@ -743,7 +751,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
             "File Name": st.column_config.ButtonColumn(
                 "File Name",
                 type="tertiary",
-                help="点击用 Mac“预览”打开原始图片，可直接编辑并保存。",
+                help=f"点击用{image_editor_label()}打开原始图片，可直接编辑并保存。",
                 on_click=open_result_source_image,
                 key="result_source_open",
             ),
@@ -956,7 +964,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
         try:
             result_file = save_current_results(records, st.session_state.item_rows, st.session_state.folder, st.session_state.audit_log)
             folder_name = Path(st.session_state.folder).name or "results"
-            saved_path = save_as_macos(result_file, default_name=f"{folder_name}_最终成绩.xlsx")
+            saved_path = save_as(result_file, default_name=f"{folder_name}_最终成绩.xlsx")
             st.success(f"已生成自动保存文件：\n\n{result_file}\n\n人工另存的默认文件名：{folder_name}_最终成绩.xlsx")
             if saved_path is not None:
                 st.success(f"已另存为：\n\n{saved_path}")
