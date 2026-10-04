@@ -26,7 +26,7 @@ jobs:
       - name: Separate installer and portable downloads
         run: |
           python3 - <<'PY'
-          import hashlib, shutil
+          import hashlib, shutil, json, struct, zipfile
           from pathlib import Path
           root = Path('packages')
           lines = (root / 'SHA256SUMS.txt').read_text().splitlines()
@@ -47,6 +47,39 @@ jobs:
               shutil.copy2(data, target / name)
               shutil.copy2(root / 'build-manifest.json', target / 'build-manifest.json')
               (target / 'SHA256SUMS.txt').write_text(line + '\n')
+          portable = next(root.glob('*.zip'))
+          with zipfile.ZipFile(portable) as archive:
+              names = set(archive.namelist())
+              required = [
+                  '佳音考试管理.exe', 'resources/app.asar',
+                  'resources/runtime/python/python.exe',
+                  'resources/runtime/python/python312.dll',
+                  'resources/runtime/python/Lib/site-packages/streamlit/__init__.py',
+                  'resources/runtime/scanner/app/scan_ui.py',
+                  'resources/runtime/scanner/resources/seed_config/template.json',
+                  'resources/runtime/results/scripts/start-node.mjs',
+                  'resources/runtime/results/dist/standalone/.joy-local-node.json',
+                  'resources/runtime/results/dist/standalone/dist/server/index.js',
+                  'resources/runtime/results/dist/standalone/local-runtime/node-storage.mjs',
+              ]
+              if not set(required).issubset(names):
+                  raise ValueError('Missing packaged runtime files: ' + str(set(required) - names))
+              forbidden = ['resources/runtime/scanner/sessions/', 'resources/runtime/scanner/config/', 'resources/runtime/results/.local/']
+              if any(name.startswith(prefix) for name in names for prefix in forbidden):
+                  raise ValueError('User data directory found in package')
+              if 'resources/runtime/results/results.sqlite' in names:
+                  raise ValueError('User database found in package')
+              if archive.read('resources/runtime/build-manifest.json') != (root / 'build-manifest.json').read_bytes():
+                  raise ValueError('Packaged build manifest differs')
+              with archive.open('佳音考试管理.exe') as stream:
+                  header = stream.read(4096)
+              offset = struct.unpack_from('<I', header, 0x3c)[0]
+              if header[:2] != b'MZ' or list(header[offset:offset+4]) != [80, 69, 0, 0] or struct.unpack_from('<H', header, offset+4)[0] != 0x8664:
+                  raise ValueError('Packaged app is not Windows x64')
+              inspection = {'checksums': 'matched', 'runtimeFiles': 'present', 'userData': 'excluded', 'appArchitecture': 'x64', 'archiveEntries': len(names)}
+          for directory in ['installer', 'portable']:
+              (Path('delivery') / directory / 'package-inspection.json').write_text(json.dumps(inspection, indent=2) + '\n')
+          print(json.dumps(inspection))
           PY
       - uses: actions/upload-artifact@v4
         with:
