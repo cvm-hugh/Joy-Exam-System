@@ -1,0 +1,64 @@
+name: Windows package delivery
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Successful Windows package run ID
+        required: true
+        default: '37237569419'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deliver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Joy-Exam-System-Windows-x64
+          path: packages
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Separate installer and portable downloads
+        run: |
+          python3 - <<'PY'
+          import hashlib, shutil
+          from pathlib import Path
+          root = Path('packages')
+          lines = (root / 'SHA256SUMS.txt').read_text().splitlines()
+          for line in lines:
+              digest, name = line.split('  ', 1)
+              if Path(name).name != name:
+                  raise ValueError('Invalid artifact filename')
+              data = root / name
+              with data.open('rb') as stream:
+                  actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+              if digest != actual:
+                  raise ValueError('Artifact checksum mismatch')
+              kind = 'installer' if name.endswith('-Setup.exe') else 'portable' if name.endswith('.zip') else None
+              if kind is None:
+                  raise ValueError('Unexpected artifact type')
+              target = Path('delivery') / kind
+              target.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(data, target / name)
+              shutil.copy2(root / 'build-manifest.json', target / 'build-manifest.json')
+              (target / 'SHA256SUMS.txt').write_text(line + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Joy-Exam-System-Windows-installer
+          path: delivery/installer/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Joy-Exam-System-Windows-portable
+          path: delivery/portable/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
