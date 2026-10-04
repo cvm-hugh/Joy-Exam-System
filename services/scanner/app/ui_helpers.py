@@ -38,6 +38,25 @@ MANUAL_SCORE_PARTS = (
 )
 
 
+def review_item_title(item: dict[str, Any], template: dict[str, Any]) -> str:
+    """单题显示所属 Part 和完整模板题号范围。"""
+    section = item.get("section")
+    if section not in PART_LABELS or "number" not in item:
+        return item["title"]
+    part_label = PART_LABELS[section]
+    for template_root, part, group_section in QUESTION_GROUPS:
+        if group_section != section:
+            continue
+        numbers = sorted(
+            int(number) for number in template.get(template_root, {}).get(part, {})
+            if str(number).isdecimal()
+        )
+        if numbers:
+            return f"{part_label} （{numbers[0]}～{numbers[-1]}） 题号{item['number']}"
+        break
+    return f"{part_label} 题号{item['number']}"
+
+
 def required_files() -> dict[str, Path]:
     return {"学生名单": CONFIG_DIR / "student_list.xlsx", "答题卡模板": CONFIG_DIR / "template.json", "标准答案": CONFIG_DIR / "answer_key.json"}
 

@@ -38,7 +38,7 @@ from app.ui_helpers import (answer_card_preview, apply_exam_id,
                             apply_student_supplement, choose_macos_folder,
                             exam_id_crop, image_paths, issue_key, low_answer_warning,
                             open_original_in_preview, pending_part_questions,
-                            prepare_mark_review, required_files,
+                            prepare_mark_review, required_files, review_item_title,
                             save_as_macos, save_current_results, scan_one,
                             synchronize_part_review)
 
@@ -699,7 +699,7 @@ def render_exam_identity_review(record: dict, students: dict) -> None:
         st.caption(f"{prefix}：考号 {record['Exam ID']} · {record.get('Chinese Name', '')}")
 
 
-def save_mark_review(source_image: str, item_key: str, students: dict, choice_widget_key: str | None = None) -> None:
+def save_mark_review(source_image: str, item_key: str, students: dict, choice_widget_key: str | None = None, display_title: str | None = None) -> None:
     """保存单题人工修正，只使用按钮自带的一次重跑。"""
     record = find_record(source_image)
     item = next(
@@ -736,7 +736,7 @@ def save_mark_review(source_image: str, item_key: str, students: dict, choice_wi
     refresh_status(record, students)
     st.session_state.exports = None
     persist_current_session()
-    set_review_notice("success", f"{item['title']} 修正已保存。")
+    set_review_notice("success", f"{display_title or item['title']} 修正已保存。")
 
 
 def confirm_part_review(source_image: str, item_key: str, students: dict) -> None:
@@ -1057,7 +1057,8 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                     if item_is_resolved:
                                         st.success("该 Part 已确认并保存。")
                                     continue
-                                st.write(f"题号或得分区域：{item['title']}")
+                                display_title = review_item_title(item, template)
+                                st.write(f"题号或得分区域：{display_title}")
                                 st.write(f"{'原始识别（已复核）' if item_is_resolved else '当前识别'}：{item['detail'].replace('当前识别结果：', '')}")
                                 if item["crop"] is not None:
                                     st.image(item["crop"], caption="当前题目局部图", width=500)
@@ -1087,7 +1088,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
                                             "修改并重新保存" if item_is_resolved else "保存该项修正",
                                             key=f"save_mark_{record['Source Image']}_{item['key']}",
                                             on_click=save_mark_review,
-                                            args=(record["Source Image"], item["key"], students, choice_widget_key),
+                                            args=(record["Source Image"], item["key"], students, choice_widget_key, display_title),
                                         )
                     else:
                         st.caption("暂无需要人工复核的答题内容项目。")
