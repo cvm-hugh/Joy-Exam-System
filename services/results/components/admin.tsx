@@ -454,7 +454,7 @@ function AdminScreen() {
         onSaved={async () => { await refresh(); setInformationStudent(null); setInformationDirty(false); setResult(null); setSuccess('学生信息已补充保存；导出时会使用当前信息并保留原始导入内容。'); }}
         onCancel={() => { void (async () => { if (informationDirty && !(await confirm('有未保存的补充信息，确定关闭并放弃输入？'))) return; setInformationStudent(null); setInformationDirty(false); })(); }}
       />}
-      <ReportExport count={snapshot.count} revision={snapshot.revision} disabled={busy || dirty || informationDirty} onBusyChange={setBusy} selectedExamNos={selectedExamNos} onFillInformation={openStudentInformation} />
+      <ReportExport count={snapshot.count} revision={snapshot.revision} batchId={snapshot.batchId} examName={snapshot.config.examName} sourceFileName={snapshot.sourceFileName} disabled={busy || dirty || informationDirty} onBusyChange={setBusy} selectedExamNos={selectedExamNos} onFillInformation={openStudentInformation} />
       {!!snapshot.count && <div className="actions" style={{ marginTop: 12 }}>
         <Button size="sm" variant="outline" disabled={busy || selectedExamNos.length === snapshot.count} onClick={() => void act(selectAllStudents)}>全选全部学生</Button>
         <Button size="sm" variant="ghost" disabled={busy || !selectedExamNos.length} onClick={() => setSelectedExamNos([])}>取消全部选择</Button>

@@ -265,7 +265,8 @@ export async function handleApi(
         new Uint8Array(await file.arrayBuffer()),
         state.config.analysis,
       );
-      await store.replace(students, state.revision, false, state.config);
+      const sourceFileName = z.string().trim().max(512).optional().parse(form.get('sourceFileName') ?? undefined);
+      await store.replace(students, state.revision, false, state.config, undefined, sourceFileName || null);
       return json({ ok: true, count: students.length, information: summarizeStudentInformation(students) });
     }
     if (path === 'admin/login' && method === 'POST') {
@@ -612,6 +613,7 @@ export async function handleApi(
         flag === 'true',
         config,
         paper ?? undefined,
+        file.name,
       );
       return json({ ok: true, count: students.length, information: summarizeStudentInformation(students) });
     }
@@ -716,6 +718,7 @@ export async function handleApi(
       return json({
         count: selected.length,
         examName: state.config.examName,
+        sourceFileName: state.sourceFileName ?? null,
         analysis: state.config.analysis,
         records,
       });

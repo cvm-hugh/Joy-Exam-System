@@ -23,6 +23,7 @@ export const examState = sqliteTable('exam_state', {
   published: text('published').notNull().default('closed'),
   batchId: text('batch_id'),
   importedAt: text('imported_at'),
+  sourceFileName: text('source_file_name'),
   isDemo: integer('is_demo').notNull().default(1),
 });
 export const students = sqliteTable('students', {

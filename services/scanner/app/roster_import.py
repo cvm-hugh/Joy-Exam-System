@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 from shutil import copy2
@@ -218,6 +219,7 @@ def save_roster_snapshot(
     snapshot_name: str = "student_list.xlsx",
     *,
     overwrite: bool = False,
+    source_filename: str | None = None,
 ) -> Path:
     """保存已验证名单的标准化副本，供现有扫描核心稳定读取。"""
     imported = read_roster(source)
@@ -240,7 +242,23 @@ def save_roster_snapshot(
     source_snapshot = destination_directory / "roster_source.xlsx"
     if source.resolve() != source_snapshot.resolve():
         copy2(source, source_snapshot)
+    # Keep the user-visible filename even when the uploaded file was staged
+    # under a random temporary name before validation.
+    metadata = {"source_filename": source_filename if source_filename is not None else source.name}
+    (destination_directory / "roster_source_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False), encoding="utf-8",
+    )
     return destination
+
+
+def roster_source_filename(directory: Path) -> str:
+    """旧名单未保存原文件名时返回空值，由导出页面允许补填。"""
+    try:
+        metadata = json.loads((directory / "roster_source_metadata.json").read_text(encoding="utf-8"))
+        value = metadata.get("source_filename") if isinstance(metadata, dict) else None
+        return value.strip() if isinstance(value, str) else ""
+    except (OSError, ValueError):
+        return ""
 
 
 def generate_roster_template(destination: Path) -> Path:

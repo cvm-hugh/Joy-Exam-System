@@ -28,7 +28,7 @@ from app.review_navigation import (EXPORT_TARGET_KEY, PENDING_REVIEW_STATUSES,
                                    first_pending_review_key, review_answers_key,
                                    review_card_key, review_item_key, review_panel_key)
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
-from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, save_roster_snapshot
+from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, roster_source_filename, save_roster_snapshot
 from app.student_information import student_information_issues
 from app.review_store import (audit_entry, delete_review_session,
                               load_review_session, save_review_session)
@@ -237,7 +237,7 @@ def render_roster_setup() -> None:
         temporary_path = save_uploaded_xlsx(uploaded)
         try:
             imported = read_roster(temporary_path)
-            save_roster_snapshot(temporary_path, CONFIG_DIR, overwrite=True)
+            save_roster_snapshot(temporary_path, CONFIG_DIR, overwrite=True, source_filename=uploaded.name)
             st.session_state.roster_import_notice = (
                 f"学生名单已载入：{imported.count} 人。"
                 "已转换为 App 所需格式，不会修改原 Excel。"
@@ -550,6 +550,8 @@ def handoff_results_to_management(result_file: Path) -> int:
         b'Content-Disposition: form-data; name="file"; filename="grading-handoff.xlsx"\r\n',
         b"Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n",
         file_bytes,
+        f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="sourceFileName"\r\n\r\n'.encode(),
+        roster_source_filename(CONFIG_DIR).encode("utf-8"),
         f"\r\n--{boundary}--\r\n".encode(),
     ))
     request = urllib.request.Request(

@@ -340,6 +340,8 @@ export type State = {
   published: 'closed' | 'demo' | 'formal';
   batchId: string | null;
   importedAt: string | null;
+  /** Name of the original roster or directly imported score workbook. */
+  sourceFileName?: string | null;
   isDemoData: boolean;
   count: number;
 };

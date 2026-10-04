@@ -193,7 +193,6 @@ export async function buildDimensionCoefficientWorkbook({
   detail.autoFilter = { from: 'A1', to: detail.getRow(1).getCell(headers.length).address };
 
   if (!includeScoreDetails) {
-    appendInformationSheets(workbook, students);
     const bytes = await workbook.xlsx.writeBuffer();
     return bytes;
   }
@@ -268,6 +267,17 @@ export async function buildDimensionCoefficientWorkbook({
   return bytes;
 }
 
-export function dimensionCoefficientFileName() {
-  return `六维得分系数-${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+export function dimensionCoefficientFileName(sourceFileName: string, includeScoreDetails = true) {
+  const original = sourceFileName.split(/[\\/]/).pop() ?? '';
+  const printable = Array.from(original, (character) => character.charCodeAt(0) < 32 ? '_' : character).join('');
+  const stem = printable.replace(/\.(xlsx?|csv)$/i, '')
+    .replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/g, '').trim() || '学生名单';
+  // Leave room for the suffix within common filesystem filename limits.
+  let base = '';
+  const encoder = new TextEncoder();
+  for (const character of stem) {
+    if (encoder.encode(base + character).length > 210) break;
+    base += character;
+  }
+  return `${base}${includeScoreDetails ? '详细得分' : '六维系数'}.xlsx`;
 }

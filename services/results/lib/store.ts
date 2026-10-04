@@ -23,7 +23,7 @@ export interface Database {
 }
 export const DDL = [
   `CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, UNIQUE(kind,name))`,
-  `CREATE TABLE IF NOT EXISTS exam_state (id INTEGER PRIMARY KEY CHECK(id=1), config TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, published TEXT NOT NULL DEFAULT 'closed', batch_id TEXT, imported_at TEXT, is_demo INTEGER NOT NULL DEFAULT 1)`,
+  `CREATE TABLE IF NOT EXISTS exam_state (id INTEGER PRIMARY KEY CHECK(id=1), config TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, published TEXT NOT NULL DEFAULT 'closed', batch_id TEXT, imported_at TEXT, source_file_name TEXT, is_demo INTEGER NOT NULL DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS students (exam_no TEXT PRIMARY KEY, name TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'XX 分校', scores TEXT NOT NULL, total TEXT NOT NULL, source_data TEXT NOT NULL DEFAULT '{}')`,
   `CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires_at INTEGER NOT NULL)`,
@@ -42,6 +42,9 @@ export class Store {
   constructor(public db: Database) {}
   async init() {
     await this.db.batch(DDL.map((sql) => this.db.prepare(sql)));
+    const stateColumns = await this.db.prepare('PRAGMA table_info(exam_state)').all<{ name: string }>();
+    if (!stateColumns.results.some((column) => column.name === 'source_file_name'))
+      await this.db.prepare('ALTER TABLE exam_state ADD COLUMN source_file_name TEXT').run();
     const columns = await this.db.prepare('PRAGMA table_info(students)').all<{ name: string }>();
     if (!columns.results.some((column) => column.name === 'branch'))
       await this.db.prepare("ALTER TABLE students ADD COLUMN branch TEXT NOT NULL DEFAULT 'XX 分校'").run();
@@ -67,6 +70,7 @@ export class Store {
         published: State['published'];
         batch_id: string | null;
         imported_at: string | null;
+        source_file_name: string | null;
         is_demo: number;
         count: number;
       }>();
@@ -77,6 +81,7 @@ export class Store {
       published: row.published,
       batchId: row.batch_id,
       importedAt: row.imported_at,
+      sourceFileName: row.source_file_name,
       isDemoData: !!row.is_demo,
       count: row.count,
     };
@@ -96,6 +101,7 @@ export class Store {
     isDemo: boolean,
     config?: Config,
     paper?: { id: string; revision: number },
+    sourceFileName?: string | null,
   ) {
     // All three statements execute as one D1 transaction. Optimistic guard prevents stale replacements.
     const paperGuard = paper
@@ -114,7 +120,7 @@ export class Store {
         .bind(JSON.stringify(students), ...bindings),
       this.db
         .prepare(
-          "UPDATE exam_state SET batch_id=?,imported_at=?,is_demo=?,config=COALESCE(?,config),revision=revision+1 WHERE id=1 AND revision=? AND published='closed'" +
+          "UPDATE exam_state SET batch_id=?,imported_at=?,is_demo=?,config=COALESCE(?,config),source_file_name=?,revision=revision+1 WHERE id=1 AND revision=? AND published='closed'" +
             paperGuard,
         )
         .bind(
@@ -122,6 +128,7 @@ export class Store {
           new Date().toISOString(),
           isDemo ? 1 : 0,
           config ? JSON.stringify(config) : null,
+          sourceFileName?.trim() || null,
           ...bindings,
         ),
     ]);
