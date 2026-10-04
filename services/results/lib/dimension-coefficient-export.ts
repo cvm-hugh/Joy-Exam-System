@@ -1,111 +1,37 @@
 import Decimal from 'decimal.js';
 import ExcelJS from 'exceljs';
 import type { Analysis, Student } from './domain';
-import { normalizeYearLevel, summarizeStudentInformation } from './student-information';
+import { appendInformationSheets, COEFFICIENT_COLUMNS, COEFFICIENT_END, originalRosterValues, ORIGINAL_ROSTER_HEADERS, styleHeader, type RosterExportStudent } from './roster-export';
+export { dimensionCoefficientFileName } from './export-file-name';
 
 export type DimensionCoefficientExportData = {
   examName: string;
   analysis: Analysis;
-  students: Array<Student & { qualifiedForInterview?: boolean | null }>;
+  students: RosterExportStudent[];
   includeScoreDetails?: boolean;
 };
 
-const ORIGINAL_ROSTER_HEADERS = [
-  '学号', '中英文名', '姓名', '年级', '上课科目', '课程', '班级', '毕业时间', '上课校区',
-  '任课老师', '笔试时间', '备注', '是否报名TM', '联系电话', '精修笔试通过', '',
-  '听力理解得分系数', '词汇运用得分系数', '语法运用得分系数', '交际能力得分系数',
-  '阅读理解得分系数', '写作能力得分系数', '', '', '', '',
-];
+type DimensionPlan = {
+  dimension: Analysis['dimensions'][number];
+  parts: Analysis['parts'];
+  maximum: Decimal;
+};
 
-function originalRosterValues(
-  student: Student & { qualifiedForInterview?: boolean | null },
-  coefficients: Map<string, number>,
-) {
-  const source = student.sourceData ?? {};
-  const fallback: Record<string, string> = {
-    '学号': student.examNo,
-    '中英文名': source['中英文名'] ?? source['姓名'] ?? student.name,
-    '姓名': student.name,
-    '年级': student.yearLevel ?? '',
-    '班级': student.className ?? '',
-    '上课校区': student.branch ?? '',
-    '笔试时间': source['笔试时间'] ?? source['考试时间'] ?? source['考试批次'] ?? student.examSession ?? '',
-    '联系电话': source['联系电话'] ?? source['联系电活'] ?? '',
-  };
-  return ORIGINAL_ROSTER_HEADERS.map((header) => {
-    if (!header) return '';
-    // Export the current metadata, including values supplemented after import.
-    if (header === '年级') return normalizeYearLevel(student.yearLevel);
-    if (header === '班级') return student.className ?? '';
-    if (header === '上课校区') return student.branch ?? '';
-    if (header === '笔试时间') return student.examSession ?? '';
-    if (header === '姓名') {
-      const name = source['姓名'] ?? student.name;
-      return name.match(/[\u3400-\u9fff]+/g)?.join('') ?? name;
-    }
-    if (header === '精修笔试通过') {
-      if (student.qualifiedForInterview == null) return '';
-      return student.qualifiedForInterview ? '是' : '否';
-    }
-    if (header.endsWith('得分系数'))
-      return coefficients.get(header.slice(0, -4)) ?? '';
-    return source[header] ?? fallback[header] ?? '';
+function compileDimensions(analysis: Analysis): DimensionPlan[] {
+  const partsById = new Map(analysis.parts.map((part) => [part.id, part]));
+  return analysis.dimensions.map((dimension) => {
+    const parts = dimension.parts.map((id) => partsById.get(id)!);
+    const maximum = parts.reduce((sum, part) => sum.plus(part.max), new Decimal(0));
+    return { dimension, parts, maximum };
   });
 }
 
-function truncatedCoefficient(
-  student: Student,
-  dimension: Analysis['dimensions'][number],
-  analysis: Analysis,
-) {
-  const actual = dimension.parts.reduce(
-    (sum, id) => sum.plus(student.scores[id]),
-    new Decimal(0),
-  );
-  const maximum = dimension.parts.reduce(
-    (sum, id) =>
-      sum.plus(analysis.parts.find((part) => part.id === id)!.max),
-    new Decimal(0),
-  );
+function truncatedCoefficient(student: Student, plan: DimensionPlan) {
+  const actual = plan.parts.reduce((sum, part) => sum.plus(student.scores[part.id]), new Decimal(0));
   return {
     actual: actual.toNumber(),
-    coefficient: actual
-      .div(maximum)
-      .toDecimalPlaces(2, Decimal.ROUND_DOWN)
-      .toNumber(),
+    coefficient: actual.div(plan.maximum).toDecimalPlaces(2, Decimal.ROUND_DOWN).toNumber(),
   };
-}
-
-function styleHeader(row: ExcelJS.Row, color = '24684F') {
-  row.height = 28;
-  row.eachCell((cell) => {
-    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${color}` } };
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    cell.border = { bottom: { style: 'thin', color: { argb: 'FFD7E2DC' } } };
-  });
-}
-
-function appendInformationSheets(workbook: ExcelJS.Workbook, students: Student[]) {
-  const checklist = workbook.addWorksheet('信息待补充');
-  checklist.columns = [{ width: 18 }, { width: 18 }, { width: 18 }, { width: 24 }, { width: 44 }];
-  checklist.addRow(['考号', '学生姓名', '信息字段', '当前填写内容', '提示']);
-  for (const item of summarizeStudentInformation(students).items)
-    checklist.addRow([item.examNo, item.name, item.label, item.value, item.message]);
-  checklist.getColumn(1).numFmt = '@';
-  checklist.views = [{ state: 'frozen', ySplit: 1 }];
-  checklist.autoFilter = 'A1:E1';
-  styleHeader(checklist.getRow(1), '98641D');
-
-  const original = workbook.addWorksheet('原始名单信息');
-  const sourceHeaders = [...new Set(students.flatMap((student) => Object.keys(student.sourceData ?? {})))];
-  original.addRow(['当前考号', '当前学生姓名', ...sourceHeaders]);
-  for (const student of students)
-    original.addRow([student.examNo, student.name, ...sourceHeaders.map((header) => student.sourceData?.[header] ?? '')]);
-  original.getColumn(1).numFmt = '@';
-  original.columns.forEach((column) => { column.width = 22; column.numFmt = '@'; });
-  original.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
-  styleHeader(original.getRow(1));
 }
 
 export async function buildDimensionCoefficientWorkbook({
@@ -122,10 +48,10 @@ export async function buildDimensionCoefficientWorkbook({
     views: [{ state: 'frozen', ySplit: 1, xSplit: 2, showGridLines: false }],
     properties: { defaultRowHeight: 22 },
   });
-  const coefficientEnd = ORIGINAL_ROSTER_HEADERS.indexOf('写作能力得分系数') + 1;
+  const dimensionPlans = compileDimensions(analysis);
   const rosterHeaders = includeScoreDetails
     ? ORIGINAL_ROSTER_HEADERS
-    : ORIGINAL_ROSTER_HEADERS.slice(0, coefficientEnd);
+    : ORIGINAL_ROSTER_HEADERS.slice(0, COEFFICIENT_END);
   const headers = includeScoreDetails
     ? [
         ...rosterHeaders,
@@ -139,12 +65,10 @@ export async function buildDimensionCoefficientWorkbook({
   styleHeader(detail.getRow(1));
 
   for (const student of students) {
-    const dimensions = analysis.dimensions.map((dimension) =>
-      truncatedCoefficient(student, dimension, analysis),
-    );
+    const dimensions = dimensionPlans.map((plan) => truncatedCoefficient(student, plan));
     const coefficients = new Map(
       analysis.dimensions.map((dimension, index) => [
-        dimension.name,
+        dimension.id,
         dimensions[index].coefficient,
       ]),
     );
@@ -173,7 +97,7 @@ export async function buildDimensionCoefficientWorkbook({
   if (includeScoreDetails)
     for (let column = partStart; column <= totalEnd; column += 1)
       detail.getColumn(column).numFmt = '0.####';
-  for (let column = 17; column <= 22; column += 1)
+  for (const column of COEFFICIENT_COLUMNS)
     detail.getColumn(column).numFmt = '0.00';
   for (let row = 2; row <= detail.rowCount; row += 1) {
     const current = detail.getRow(row);
@@ -241,9 +165,7 @@ export async function buildDimensionCoefficientWorkbook({
   rules.addRow([]);
   const mappingHeader = rules.addRow(['维度', 'Part编号', 'Part名称与满分', '维度总满分', '计算公式']);
   styleHeader(mappingHeader);
-  for (const dimension of analysis.dimensions) {
-    const parts = dimension.parts.map((id) => analysis.parts.find((part) => part.id === id)!);
-    const maximum = parts.reduce((sum, part) => sum.plus(part.max), new Decimal(0));
+  for (const { dimension, parts, maximum } of dimensionPlans) {
     const row = rules.addRow([
       dimension.name,
       parts.map((part) => part.id).join(' + '),
@@ -265,20 +187,4 @@ export async function buildDimensionCoefficientWorkbook({
   appendInformationSheets(workbook, students);
   const bytes = await workbook.xlsx.writeBuffer();
   return bytes;
-}
-
-export function dimensionCoefficientFileName(sourceFileName: string, includeScoreDetails = true) {
-  const original = sourceFileName.split(/[\\/]/).pop() ?? '';
-  const printable = Array.from(original, (character) => character.charCodeAt(0) < 32 ? '_' : character).join('');
-  const stem = printable.replace(/\.(xlsx?|csv)$/i, '')
-    .replace(/(?:[\s_-]*(?:六维系数|六维得分系数|6维得分系数|详细得分))+$/u, '')
-    .replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/g, '').trim() || '学生名单';
-  // Leave room for the suffix within common filesystem filename limits.
-  let base = '';
-  const encoder = new TextEncoder();
-  for (const character of stem) {
-    if (encoder.encode(base + character).length > 210) break;
-    base += character;
-  }
-  return `${base}${includeScoreDetails ? '详细得分' : '六维系数'}.xlsx`;
 }

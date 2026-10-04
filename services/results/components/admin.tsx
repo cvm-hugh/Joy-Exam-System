@@ -670,7 +670,7 @@ function AdminScreen() {
         <header className="topbar">
           <span>{tabs.find((t) => t.id === tab)?.label}</span>
           <span className="pill">
-            V1 · {stateLabel}
+            V2.0 · {stateLabel}
             {dirty ? ' · 有未保存配置' : ''}
           </span>
         </header>

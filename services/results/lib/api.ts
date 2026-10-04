@@ -1,3 +1,4 @@
+import { API_RESPONSE_HEADERS as headers, ApiError, boundedRequest, body, json, REQUEST_LIMITS, validImage } from './api-http';
 import { z } from 'zod';
 import { configSchema, identitySchema, readiness, resultFor, studentInfoSchema } from './domain';
 import { normalizeYearLevel, summarizeStudentInformation } from './student-information';
@@ -41,22 +42,7 @@ export type ApiEnv = {
   ALLOW_FORMAL_PUBLISH?: string;
   DESKTOP_BRIDGE_TOKEN?: string;
 };
-const headers = {
-  'Cache-Control': 'no-store, private',
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'no-referrer',
-};
-function json(data: unknown, status = 200, extra: Record<string, string> = {}) {
-  return Response.json(data, { status, headers: { ...headers, ...extra } });
-}
-class ApiError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-  ) {
-    super(message);
-  }
-}
+
 async function resolvePaper(
   store: Store,
   id: FormDataEntryValue | null,
@@ -76,38 +62,7 @@ async function resolvePaper(
     );
   return paper;
 }
-async function boundedRequest(request: Request) {
-  if (!request.body) return request;
-  const limit = request.headers
-    .get('content-type')
-    ?.includes('multipart/form-data')
-    ? 3_200_000
-    : 250_000;
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  while (true) {
-    const part = await reader.read();
-    if (part.done) break;
-    size += part.value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      throw new ApiError('请求内容超过大小限制', 413);
-    }
-    chunks.push(part.value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new Request(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: bytes,
-  });
-}
+
 const revisionSchema = z.number().int().nonnegative();
 const adminPreviewSchema = z
   .object({
@@ -118,17 +73,7 @@ const adminPreviewSchema = z
   .refine((value) => !!value.name || !!value.examNo, {
     message: '请至少填写学生姓名或考号',
   });
-async function body(request: Request) {
-  if (!request.headers.get('content-type')?.includes('application/json'))
-    throw new ApiError('请求必须为JSON', 415);
-  const text = await request.text();
-  if (text.length > 250_000) throw new ApiError('请求内容过大', 413);
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new ApiError('JSON格式错误');
-  }
-}
+
 function closed(state: { published: string }) {
   if (state.published !== 'closed')
     throw new ApiError('请先关闭查询，再修改配置或替换成绩', 409);
@@ -151,34 +96,7 @@ async function createAdminSession(store: Store, request: Request) {
   ]);
   return cookie(token, request.url);
 }
-function validImage(bytes: Uint8Array) {
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 137 &&
-    bytes[1] === 80 &&
-    bytes[2] === 78 &&
-    bytes[3] === 71 &&
-    bytes[4] === 13 &&
-    bytes[5] === 10 &&
-    bytes[6] === 26 &&
-    bytes[7] === 10
-  )
-    return { ext: 'png', type: 'image/png' };
-  if (
-    bytes.length >= 4 &&
-    bytes[0] === 255 &&
-    bytes[1] === 216 &&
-    bytes[2] === 255
-  )
-    return { ext: 'jpg', type: 'image/jpeg' };
-  if (
-    bytes.length >= 12 &&
-    new TextDecoder().decode(bytes.slice(0, 4)) === 'RIFF' &&
-    new TextDecoder().decode(bytes.slice(8, 12)) === 'WEBP'
-  )
-    return { ext: 'webp', type: 'image/webp' };
-  return null;
-}
+
 export async function handleApi(
   request: Request,
   env: ApiEnv,
@@ -187,7 +105,7 @@ export async function handleApi(
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api\/?/, '');
     const method = request.method;
-    if (Number(request.headers.get('content-length') ?? 0) > 3_200_000)
+    if (Number(request.headers.get('content-length') ?? 0) > REQUEST_LIMITS.multipart)
       return json({ error: '请求超过大小限制' }, 413);
     request = await boundedRequest(request);
     const store = new Store(env.DB);

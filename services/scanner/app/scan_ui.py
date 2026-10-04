@@ -10,7 +10,6 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-import uuid
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -23,24 +22,21 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.answer_key_import import generate_answer_key_template, read_answer_key
 from app.constants import CONFIG_DIR, ensure_runtime_config
+from app.review_session import ReviewSession
 from app.review_scroll import install_review_scroll_lock
 from app.review_navigation import (EXPORT_TARGET_KEY, PENDING_REVIEW_STATUSES,
-                                   first_pending_review_key, review_answers_key,
+                                   review_answers_key,
                                    review_card_key, review_item_key, review_panel_key)
 from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, roster_source_filename, save_roster_snapshot
 from app.student_information import student_information_issues
-from app.review_store import (audit_entry, delete_review_session,
-                              load_review_session, save_review_session)
-from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results, load_students, load_template, update_review_flag, update_score_totals
-from app.ui_helpers import (answer_card_preview, apply_exam_id,
-                            apply_mark, apply_part_empty,
-                            apply_student_supplement, choose_macos_folder,
+from app.review_store import delete_review_session, load_review_session
+from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, load_students, load_template, update_score_totals
+from app.ui_helpers import (answer_card_preview, choose_macos_folder,
                             exam_id_crop, image_paths, issue_key, low_answer_warning,
-                            open_original_in_preview, pending_part_questions,
+                            open_original_in_preview,
                             prepare_mark_review, required_files, review_item_title,
-                            save_as_macos, save_current_results, scan_one,
-                            synchronize_part_review)
+                            save_as_macos, save_current_results, scan_one)
 
 st.set_page_config(page_title="佳音考试管理 · 阅卷", layout="wide")
 st.markdown(
@@ -58,20 +54,12 @@ st.markdown(
 )
 
 
+def review_session() -> ReviewSession:
+    return ReviewSession(st.session_state)
+
+
 def initialize() -> None:
-    defaults = {
-        "records": [], "item_rows": [], "issues": {}, "resolved": set(),
-        "confirmed_warnings": set(), "audit_log": [], "reviewer": getpass.getuser(),
-        "review_basis": "答题卡图片", "folder": "", "exports": None,
-        "identity_notices": {},
-        "loaded_session_folder": "", "view": "setup", "part_expand_notices": {},
-        "stable_review_sources": set(), "ui_zoom": 100,
-        "pending_image_rescan": None,
-        "review_navigation": None,
-        "closed_review_sources": set(),
-    }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
+    return review_session().initialize()
 
 
 def reset_review_widgets(source_image: str | None = None) -> None:
@@ -145,26 +133,12 @@ def render_display_controls() -> None:
 
 def persist_current_session() -> None:
     """每次人工操作后立即保存，不依赖 Streamlit 会话内存。"""
-    if not st.session_state.folder or not st.session_state.records:
-        return
-    save_review_session(
-        st.session_state.folder,
-        st.session_state.records,
-        st.session_state.item_rows,
-        st.session_state.audit_log,
-        st.session_state.resolved,
-        st.session_state.confirmed_warnings,
-        st.session_state.reviewer,
-    )
+    return review_session().persist_current_session()
 
 
 def ensure_reviewer() -> str:
     """人工修正必须留下操作人；界面未填时使用当前 Mac 账户。"""
-    reviewer = str(st.session_state.get("reviewer", "")).strip()
-    if not reviewer:
-        reviewer = getpass.getuser().strip() or "本机操作人"
-        st.session_state.reviewer = reviewer
-    return reviewer
+    return review_session().ensure_reviewer()
 
 
 def _source_version(path: Path) -> int:
@@ -188,27 +162,8 @@ def cached_exam_id_crop(path_text: str, source_version: int, template_data: dict
     return exam_id_crop(Path(path_text), template_data)
 
 
-def append_audit(
-    record: dict,
-    *,
-    change_type: str,
-    target: str,
-    original_value: object,
-    corrected_value: object,
-    note: str = "",
-) -> dict:
-    entry = audit_entry(
-        record,
-        operator=st.session_state.reviewer,
-        change_type=change_type,
-        target=target,
-        original_value=original_value,
-        corrected_value=corrected_value,
-        review_basis=st.session_state.review_basis,
-        note=note,
-    )
-    st.session_state.audit_log.append(entry)
-    return entry
+def append_audit(record: dict, *, change_type: str, target: str, original_value: object, corrected_value: object, note: str='') -> dict:
+    return review_session().append_audit(record, change_type=change_type, target=target, original_value=original_value, corrected_value=corrected_value, note=note)
 
 
 def save_uploaded_xlsx(uploaded) -> Path:
@@ -360,33 +315,11 @@ def render_exam_setup() -> None:
 
 def synchronize_record_issues(record: dict) -> bool:
     """只同步待审核队列；发生变化时使旧导出缓存失效。"""
-    source = record["Source Image"]
-    current_issues = st.session_state.issues.get(source, [])
-    synchronized = synchronize_part_review(record, current_issues, st.session_state.item_rows, st.session_state.resolved)
-    if synchronized is current_issues:
-        return False
-    st.session_state.issues[source] = synchronized
-    st.session_state.exports = None
-    return True
+    return review_session().synchronize_record_issues(record)
 
 
 def refresh_status(record: dict, students: dict) -> None:
-    update_review_flag(record, st.session_state.item_rows)
-    if record.get("Manual Override"):
-        record["Status"] = "OK"
-        record["Low Answer Warning"] = None
-        return
-    source = record["Source Image"]
-    synchronize_record_issues(record)
-    pending = [item for item in st.session_state.issues.get(source, []) if issue_key(source, item["key"]) not in st.session_state.resolved]
-    record["Low Answer Warning"] = low_answer_warning(record, st.session_state.item_rows, pending)
-    if (record["Exam ID"] not in students and not record.get("Identity Confirmed")) or "?" in str(record["Exam ID"]):
-        record["Status"] = "CHECK_ID"
-        return
-    if any(item.get("kind") == "part_empty" for item in pending):
-        record["Status"] = "CHECK_PART_EMPTY"
-    else:
-        record["Status"] = "CHECK_MARK" if pending else "OK"
+    return review_session().refresh_status(record, students)
 
 
 def open_result_source_image() -> None:
@@ -469,7 +402,7 @@ def show_source_file_name(record: dict, key: str) -> None:
 
 
 @st.fragment(run_every="1s")
-def watch_pending_image_rescan() -> None:
+def watch_pending_image_rescan(template_data: dict, student_data: dict) -> None:
     """监视“预览”中的原图保存，变更后自动重识别。"""
     pending = st.session_state.get("pending_image_rescan")
     if not pending:
@@ -482,7 +415,7 @@ def watch_pending_image_rescan() -> None:
     current_mtime = path.stat().st_mtime_ns if path.is_file() else 0
     baseline = int(pending.get("baseline_mtime_ns", 0))
     if current_mtime > baseline:
-        rescan_modified_source(record, template, students)
+        rescan_modified_source(record, template_data, student_data)
         st.session_state.image_rescan_notice = (
             "success", f"已检测到 {record['File Name']} 保存，并完成本张重新识别。",
         )
@@ -491,7 +424,7 @@ def watch_pending_image_rescan() -> None:
     control_1, control_2 = st.columns(2)
     with control_1:
         if st.button("已保存，立即重新识别", key="force_pending_image_rescan"):
-            rescan_modified_source(record, template, students)
+            rescan_modified_source(record, template_data, student_data)
             st.session_state.image_rescan_notice = ("success", f"{record['File Name']} 已重新识别。")
             st.rerun()
     with control_2:
@@ -501,40 +434,24 @@ def watch_pending_image_rescan() -> None:
 
 
 def find_record(source_image: str) -> dict | None:
-    return next((record for record in st.session_state.records if record["Source Image"] == source_image), None)
+    return review_session().find_record(source_image)
 
 
 def remember_review_panel_state(source_image: str) -> None:
-    if st.session_state.get(review_panel_key(source_image), True):
-        st.session_state.closed_review_sources.discard(source_image)
-    else:
-        st.session_state.closed_review_sources.add(source_image)
+    return review_session().remember_review_panel_state(source_image)
 
 
 def complete_review_card(source_image: str) -> None:
     """Hide a finished card and move to an unfinished card that is still open."""
-    record = find_record(source_image)
-    if record is None or record.get("Status") != "OK":
-        return
-    st.session_state.stable_review_sources.discard(source_image)
-    st.session_state.review_navigation = {
-        "target": first_pending_review_key(st.session_state.records, st.session_state.closed_review_sources),
-        "token": uuid.uuid4().hex,
-    }
+    return review_session().complete_review_card(source_image)
 
 
 def current_mark_choice(record: dict, item: dict) -> str:
-    if "section" in item:
-        row = next((row for row in st.session_state.item_rows if row["Source Image"] == record["Source Image"] and row["Section"] == item["section"] and str(row["Question"]) == str(item["number"])), None)
-        return (row or {}).get("Marked Answer", "")
-    if "field" in item:
-        value = record.get({"score_part2": "Written_Part2", "score_part3": "Written_Part3", "score_writing": "Writing"}[item["field"]])
-        return "" if value is None else str(value)
-    return ""
+    return review_session().current_mark_choice(record, item)
 
 
 def set_review_notice(kind: str, message: str) -> None:
-    st.session_state.review_notice = (kind, message)
+    return review_session().set_review_notice(kind, message)
 
 
 def handoff_results_to_management(result_file: Path) -> int:
@@ -584,78 +501,16 @@ def save_exam_id_review(source_image: str, students: dict) -> None:
     Streamlit 点击按钮本身就会重跑一次；回调先写入状态，可避免之前再调用
     st.rerun() 造成的第二次闪烁。
     """
-    record = find_record(source_image)
-    if record is None:
-        set_review_notice("error", "未找到需要修正的答题卡记录。")
-        return
-    reviewer = ensure_reviewer()
-    normalized_id = normalize_exam_id(st.session_state.get(f"id_{source_image}", ""))
-    before_id = record.get("Exam ID")
-    entry = None
-    if len(normalized_id) == 6 and normalized_id.isdigit() and normalized_id in students:
-        entry = append_audit(
-            record, change_type="修正考号", target="Exam ID",
-            original_value=before_id, corrected_value=normalized_id,
-        )
-    valid, message = apply_exam_id(
-        record, st.session_state.item_rows, normalized_id, students,
-        operator=reviewer,
-        review_basis=st.session_state.review_basis,
-        changed_at=entry["Changed At"] if entry else "",
-    )
-    if not valid:
-        set_identity_notice(source_image, "error", message)
-        return
-    st.session_state.stable_review_sources.add(source_image)
-    refresh_status(record, students)
-    st.session_state.exports = None
-    persist_current_session()
-    set_identity_notice(source_image, "success", f"考号 {normalized_id} 已匹配 {record['Chinese Name']}，并确认保存。")
+    return review_session().save_exam_id_review(source_image, students)
 
 
 def set_identity_notice(source_image: str, kind: str, message: str) -> None:
-    st.session_state.identity_notices[source_image] = (kind, message)
+    return review_session().set_identity_notice(source_image, kind, message)
 
 
 def save_student_supplement(source_image: str, students: dict) -> None:
     """Confirm a missing student only after validating the submitted identity fields."""
-    record = find_record(source_image)
-    if record is None:
-        set_review_notice("error", "未找到需要补全身份的答题卡记录。")
-        return
-    entered_id = str(st.session_state.get(f"id_{source_image}", "")).strip()
-    normalized_id = normalize_exam_id(entered_id)
-    if normalized_id in students:
-        set_identity_notice(source_image, "error", "该考号已在当前名单中，请使用“确认考号”匹配名单。")
-        return
-    student_data = {
-        column: str(st.session_state.get(f"supplement_{field}_{source_image}", "")).strip()
-        for column, field in (
-            ("Chinese Name", "name"), ("Year Level", "grade"), ("Branch", "branch"),
-            ("Class", "class"), ("Exam Session", "session"),
-        )
-    }
-    entry = audit_entry(
-        record, operator=ensure_reviewer(), change_type="补全名单外学生", target="学生身份",
-        original_value=record.get("Exam ID", ""),
-        corrected_value=f"{normalized_id} / {student_data['Chinese Name']}",
-        review_basis=st.session_state.review_basis, note="原始名单中无该考号",
-    )
-    try:
-        apply_student_supplement(
-            record, st.session_state.item_rows, student_data, exam_id=entered_id,
-            operator=st.session_state.reviewer, review_basis=st.session_state.review_basis,
-            changed_at=entry["Changed At"],
-        )
-    except ValueError as exc:
-        set_identity_notice(source_image, "error", str(exc))
-        return
-    st.session_state.audit_log.append(entry)
-    st.session_state.stable_review_sources.add(source_image)
-    refresh_status(record, students)
-    st.session_state.exports = None
-    persist_current_session()
-    set_identity_notice(source_image, "success", f"考号 {normalized_id} 的后补学生信息已确认并保存。")
+    return review_session().save_student_supplement(source_image, students)
 
 
 def render_card_overview(record: dict, template: dict) -> None:
@@ -723,108 +578,19 @@ def render_exam_identity_review(record: dict, students: dict) -> None:
         st.caption(f"{prefix}：考号 {record['Exam ID']} · {record.get('Chinese Name', '')}")
 
 
-def save_mark_review(source_image: str, item_key: str, students: dict, choice_widget_key: str | None = None, display_title: str | None = None) -> None:
+def save_mark_review(source_image: str, item_key: str, students: dict, choice_widget_key: str | None=None, display_title: str | None=None) -> None:
     """保存单题人工修正，只使用按钮自带的一次重跑。"""
-    record = find_record(source_image)
-    item = next(
-        (candidate for candidate in st.session_state.issues.get(source_image, []) if candidate.get("key") == item_key),
-        None,
-    )
-    if record is None or item is None:
-        set_review_notice("error", "未找到需要保存的复核项目，请重新打开本卷。")
-        return
-    widget_key = choice_widget_key or f"choice_{source_image}_{item_key}"
-    selected = str(st.session_state.get(widget_key, "空白"))
-    reviewer = ensure_reviewer()
-    before_value = current_mark_choice(record, item) or "空白"
-    if item.get("kind") == "grader_score":
-        score_column = {"score_part2": "Written_Part2", "score_part3": "Written_Part3"}.get(item.get("field"))
-        if score_column and record.get("Score Entry States", {}).get(score_column) in {"BLANK", "AMBIGUOUS"}:
-            before_value = "教师登分区未成功读取"
-    entry = append_audit(
-        record,
-        change_type="确认教师登分" if item.get("kind") == "grader_score" else "修正填涂",
-        target=item["title"],
-        original_value=before_value, corrected_value=selected,
-    )
-    apply_mark(
-        record, st.session_state.item_rows, item, None if selected == "空白" else selected,
-        operator=reviewer,
-        review_basis=st.session_state.review_basis,
-        changed_at=entry["Changed At"],
-    )
-    st.session_state.resolved.add(issue_key(source_image, item["key"]))
-    record["Reopened Review Questions"] = [key for key in record.get("Reopened Review Questions", []) if key != item["key"]]
-    # 已保存的题目在当前操作会话中保留原位，避免页面高度突变导致滚动跳动。
-    st.session_state.stable_review_sources.add(source_image)
-    refresh_status(record, students)
-    st.session_state.exports = None
-    persist_current_session()
-    set_review_notice("success", f"{display_title or item['title']} 修正已保存。")
+    return review_session().save_mark_review(source_image, item_key, students, choice_widget_key, display_title)
 
 
 def confirm_part_review(source_image: str, item_key: str, students: dict) -> None:
     """确认整 Part，在按钮回调中保存，再由本次局部刷新展示结果。"""
-    record = find_record(source_image)
-    item = next((candidate for candidate in st.session_state.issues.get(source_image, []) if candidate.get("key") == item_key), None)
-    if record is None or item is None or item.get("kind") != "part_empty":
-        set_review_notice("error", "未找到需要确认的 Part，请重新打开本卷。")
-        return
-    full_key = issue_key(source_image, item_key)
-    if full_key in st.session_state.resolved:
-        return
-    ensure_reviewer()
-    entry = append_audit(record, change_type="人工确认", target=item["title"],
-                         original_value="待确认", corrected_value="整Part为空")
-    apply_part_empty(record, st.session_state.item_rows, item,
-                     operator=st.session_state.reviewer, review_basis=st.session_state.review_basis,
-                     changed_at=entry["Changed At"])
-    confirmed_keys = {question["key"] for question in item["question_issues"]}
-    record["Reopened Review Questions"] = [key for key in record.get("Reopened Review Questions", []) if key not in confirmed_keys]
-    st.session_state.resolved.add(full_key)
-    st.session_state.stable_review_sources.add(source_image)
-    refresh_status(record, students)
-    st.session_state.exports = None
-    persist_current_session()
-    set_review_notice("success", f"{item['title']} 已全部记为空白并保存。")
+    return review_session().confirm_part_review(source_image, item_key, students)
 
 
 def expand_part_review(source_image: str, item_key: str, students: dict) -> None:
     """展开待检查题目，避免在绘制到一半时强制中断并重跑整页。"""
-    record = find_record(source_image)
-    issues = st.session_state.issues.get(source_image, [])
-    item = next((candidate for candidate in issues if candidate.get("key") == item_key), None)
-    if record is None or item is None or item.get("kind") != "part_empty":
-        set_review_notice("error", "未找到需要展开的 Part，请重新打开本卷。")
-        return
-    record["Expanded Review Sections"] = sorted(set(record.get("Expanded Review Sections", [])) | {item["section"]})
-    if issue_key(source_image, item_key) in st.session_state.resolved:
-        question_keys = {question["key"] for question in item["question_issues"]}
-        record["Reopened Review Questions"] = sorted(set(record.get("Reopened Review Questions", [])) | question_keys)
-        for question_key in question_keys:
-            st.session_state.resolved.discard(issue_key(source_image, question_key))
-    pending_questions = pending_part_questions(record, item, st.session_state.item_rows, st.session_state.resolved)
-    item_index = issues.index(item)
-    st.session_state.issues[source_image] = issues[:item_index] + pending_questions + issues[item_index + 1:]
-    st.session_state.resolved.discard(issue_key(source_image, item_key))
-    if pending_questions:
-        message = f"{item['title']} 已展开 {len(pending_questions)} 道待检查题目，已在当前答题卡下方按题号显示。"
-        saved_count = len(item["question_issues"]) - len(pending_questions)
-        if saved_count:
-            message += f"其余 {saved_count} 道题已保存人工结果，无需重复确认。"
-    else:
-        st.session_state.stable_review_sources.add(source_image)
-        message = f"{item['title']} 的题目已全部确认，已保留保存结果并清除过期空白提示。"
-    st.session_state.part_expand_notices[source_image] = message
-    # 展开停留在本 Part 的第一道待确认题目，使用新的导航令牌覆盖此前收起动作。
-    st.session_state.review_navigation = {
-        "target": review_item_key(source_image, pending_questions[0]["key"])
-        if pending_questions else review_answers_key(source_image),
-        "token": uuid.uuid4().hex,
-    }
-    refresh_status(record, students)
-    st.session_state.exports = None
-    persist_current_session()
+    return review_session().expand_part_review(source_image, item_key, students)
 
 
 
@@ -1003,7 +769,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
     if image_rescan_notice:
         notice_kind, notice_message = image_rescan_notice
         {"success": st.success, "info": st.info, "warning": st.warning}.get(notice_kind, st.error)(notice_message)
-    watch_pending_image_rescan()
+    watch_pending_image_rescan(template, students)
     # 待检查队列直接展示；不再使用看似无反应的二次入口。
     st.session_state.show_checks = True
     if st.session_state.get("show_checks"):
