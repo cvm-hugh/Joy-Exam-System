@@ -24,7 +24,7 @@ function capture(binary, args) {
   if (result.error || result.status !== 0) throw result.error || new Error(result.stderr);
   return result.stdout.trim();
 }
-function copy(source, destination) { if (!existsSync(source)) throw new Error(`缺少构建资源：${source}`); cpSync(source, destination, { recursive: true }); }
+function copy(source, destination) { if (!existsSync(source)) throw new Error(`缺少构建资源：${source}`); cpSync(source, destination, { recursive: true, dereference: true }); }
 function sha(file) { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
 
 const metadata = JSON.parse(capture(python, ['-c', 'import json,sys; print(json.dumps({"root":sys.base_prefix,"version":sys.version.split()[0],"bits":64 if sys.maxsize>2**32 else 32}))']));
@@ -40,11 +40,11 @@ npm(['run', 'build:local'], results);
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(join(stage, 'python'), { recursive: true });
 for (const name of readdirSync(metadata.root)) {
-  if (/^python(?:w|3|312)?\.(?:exe|dll)$/i.test(name) || /^(?:vcruntime|msvcp|concrt).*\.dll$/i.test(name)) copy(join(metadata.root, name), join(stage, 'python', name));
+  if (/^(?:pythonw?\.exe|python(?:3|312)\.dll)$/i.test(name) || /^(?:vcruntime|msvcp|concrt).*\.dll$/i.test(name)) copy(join(metadata.root, name), join(stage, 'python', name));
   if (/^license(?:\.txt)?$/i.test(name)) copy(join(metadata.root, name), join(stage, 'python', name));
 }
 copy(join(metadata.root, 'DLLs'), join(stage, 'python/DLLs'));
-cpSync(join(metadata.root, 'Lib'), join(stage, 'python/Lib'), { recursive: true, filter: (source) => {
+cpSync(join(metadata.root, 'Lib'), join(stage, 'python/Lib'), { recursive: true, dereference: true, filter: (source) => {
   const relative = source.slice(join(metadata.root, 'Lib').length).replaceAll('\\', '/');
   return !/^\/(site-packages|test|idlelib|tkinter)(\/|$)/.test(relative) && !/(^|\/)__pycache__(\/|$)|\.pyc$/.test(relative);
 } });
