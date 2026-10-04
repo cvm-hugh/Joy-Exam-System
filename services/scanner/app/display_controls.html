@@ -1,0 +1,67 @@
+<!doctype html>
+<html><body><script>
+(() => {
+  const win = window.parent;
+  const doc = win.document;
+  win.__joyDisplayControls?.dispose();
+  let frame = 0;
+  const position = () => {
+    frame = 0;
+    const header = doc.querySelector('[data-testid="stHeader"]');
+    if (!header) return;
+    const tools = [...header.querySelectorAll(
+      '[data-testid="stStatusWidget"], [data-testid="stToolbarActions"], '
+      + '[data-testid="stAppDeployButton"], [data-testid="stMainMenu"]'
+    )].map(node => node.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0);
+    const headerRect = header.getBoundingClientRect();
+    const right = tools.length
+      ? win.innerWidth - Math.min(...tools.map(rect => rect.left)) + 12
+      : 16;
+    const top = headerRect.top + Math.max(0, (headerRect.height - 40) / 2);
+    // Measure the native toolbar without moving React-managed widget nodes.
+    doc.documentElement.style.setProperty('--joy-zoom-right', `${right}px`);
+    doc.documentElement.style.setProperty('--joy-zoom-top', `${top}px`);
+  };
+  const schedule = () => {
+    if (!frame) frame = win.requestAnimationFrame(position);
+  };
+  const resize = new win.ResizeObserver(schedule);
+  let watchedHeader = null;
+  const observeHeader = () => {
+    const header = doc.querySelector('[data-testid="stHeader"]');
+    resize.disconnect();
+    watchedHeader = header;
+    if (header) {
+      resize.observe(header);
+      for (const node of header.querySelectorAll('[data-testid]')) resize.observe(node);
+    }
+    schedule();
+  };
+  const mutations = new win.MutationObserver(records => {
+    if (!watchedHeader?.isConnected || records.some(record => watchedHeader.contains(record.target))) {
+      observeHeader();
+    }
+  });
+  // Header children change when Streamlit displays the running/Stop controls.
+  const app = doc.querySelector('[data-testid="stAppViewContainer"]') || doc.body;
+  mutations.observe(app, {childList: true, subtree: true});
+  win.addEventListener('resize', schedule);
+  const controller = {
+    dispose: () => {
+      mutations.disconnect();
+      resize.disconnect();
+      win.removeEventListener('resize', schedule);
+      win.cancelAnimationFrame(frame);
+    },
+  };
+  win.__joyDisplayControls = controller;
+  // Release listeners when this helper is replaced or the page is closed.
+  window.addEventListener('pagehide', () => {
+    if (win.__joyDisplayControls === controller) {
+      controller.dispose();
+      delete win.__joyDisplayControls;
+    }
+  }, {once: true});
+  observeHeader();
+})();
+</script></body></html>

@@ -43,7 +43,6 @@ from app.ui_helpers import (answer_card_preview, apply_exam_id,
                             synchronize_part_review)
 
 st.set_page_config(page_title="佳音考试管理 · 阅卷", layout="wide")
-st.title("佳音考试管理 · 阅卷")
 st.markdown(
     """
     <style>
@@ -98,26 +97,49 @@ def reset_review_widgets(source_image: str | None = None) -> None:
 
 
 def render_display_controls() -> None:
-    """调整工作台内容的整体显示比例，不改变原图或识别分辨率。"""
-    with st.popover("🔍 界面缩放"):
-        st.radio(
-            "显示比例",
-            (75, 85, 100, 110),
-            horizontal=True,
-            key="ui_zoom",
-            format_func=lambda value: f"{value}%",
-            help="只缩放软件工作台，不会压缩答题卡图片或影响识别。",
+    """固定在顶部工具栏旁，只缩放正文，保持入口的大小和位置。"""
+    with st.container(key="display_controls", width="content"):
+        with st.popover("🔍 界面缩放"):
+            st.radio(
+                "显示比例",
+                (75, 85, 100, 110),
+                horizontal=True,
+                key="ui_zoom",
+                format_func=lambda value: f"{value}%",
+                help="只缩放软件工作台，不会压缩答题卡图片或影响识别。",
+            )
+        components.html(
+            Path(__file__).with_name("display_controls.html").read_text(encoding="utf-8"),
+            height=0,
         )
     zoom = int(st.session_state.ui_zoom) / 100
-    st.markdown(
+    st.html(
         f"""
         <style>
-        [data-testid="stMainBlockContainer"] {{
+        .st-key-scanner_workbench {{
           zoom: {zoom};
+        }}
+        .st-key-display_controls {{
+          position: fixed;
+          top: var(--joy-zoom-top, 10px);
+          right: var(--joy-zoom-right, 10rem);
+          width: 9.5rem !important;
+          height: 2.5rem !important;
+          gap: 0 !important;
+          z-index: 999991;
+        }}
+        .st-key-display_controls [data-testid="stPopoverButton"] {{
+          min-height: 2.5rem;
+          height: 2.5rem;
+        }}
+        .st-key-display_controls iframe {{
+          display: none;
+        }}
+        @media print {{
+          .st-key-display_controls {{ display: none !important; }}
         }}
         </style>
         """,
-        unsafe_allow_html=True,
     )
 
 
@@ -806,109 +828,111 @@ def expand_part_review(source_image: str, item_key: str, students: dict) -> None
 
 initialize()
 render_display_controls()
-ensure_runtime_config()
-if st.session_state.view == "setup":
-    render_exam_setup()
-    st.stop()
+with st.container(key="scanner_workbench") as workbench:
+    st.title("佳音考试管理 · 阅卷")
+    ensure_runtime_config()
+    if st.session_state.view == "setup":
+        render_exam_setup()
+        st.stop()
 
-files = required_files()
-try:
-    setup_template = load_template()
-except Exception as exc:
-    st.error(f"答题卡模板无法载入：{exc}")
-    st.stop()
-missing = [label for label, path in files.items() if not path.is_file()]
+    files = required_files()
+    try:
+        setup_template = load_template()
+    except Exception as exc:
+        st.error(f"答题卡模板无法载入：{exc}")
+        st.stop()
+    missing = [label for label, path in files.items() if not path.is_file()]
 
-if st.button("返回本次考试设置", key="back_to_exam_setup"):
-    st.session_state.view = "setup"
-    st.rerun()
+    if st.button("返回本次考试设置", key="back_to_exam_setup"):
+        st.session_state.view = "setup"
+        st.rerun()
 
-st.subheader("系统状态")
-if missing:
-    st.error("缺少必要文件：" + "、".join(missing) + "。请恢复 config/ 中的文件后再开始扫描。")
-    st.stop()
-try:
-    students = load_students()
-    template = load_template()
-except Exception as exc:
-    st.error(f"配置文件无法载入：{exc}")
-    st.stop()
-status_columns = st.columns(4)
-status_columns[0].metric("学生名单", files["学生名单"].name)
-status_columns[1].metric("名单人数", len(students))
-status_columns[2].metric("答题卡模板", "已载入")
-status_columns[3].metric("标准答案", "已载入")
+    st.subheader("系统状态")
+    if missing:
+        st.error("缺少必要文件：" + "、".join(missing) + "。请恢复 config/ 中的文件后再开始扫描。")
+        st.stop()
+    try:
+        students = load_students()
+        template = load_template()
+    except Exception as exc:
+        st.error(f"配置文件无法载入：{exc}")
+        st.stop()
+    status_columns = st.columns(4)
+    status_columns[0].metric("学生名单", files["学生名单"].name)
+    status_columns[1].metric("名单人数", len(students))
+    status_columns[2].metric("答题卡模板", "已载入")
+    status_columns[3].metric("标准答案", "已载入")
 
-st.subheader("选择照片目录")
-directory_col, chooser_col = st.columns([5, 1])
-with directory_col:
-    folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="例如：/Users/你的用户名/Desktop/8月23日定位测照片")
-with chooser_col:
-    st.write("")
-    if st.button("选择文件夹", width="stretch"):
-        selected = choose_macos_folder()
-        if selected:
-            st.session_state.folder = selected
-            st.rerun()
-folder = Path(folder_text).expanduser() if folder_text else None
-if folder_text != st.session_state.folder:
-    st.session_state.folder = folder_text
-if folder and folder.is_dir():
-    images = image_paths(folder)
-    st.caption(f"已选择：{folder}；发现 {len(images)} 张可处理图片（jpg / jpeg / png / heic）。")
-else:
-    images = []
-    if folder_text:
-        st.warning("该目录不存在或无法访问。")
+    st.subheader("选择照片目录")
+    directory_col, chooser_col = st.columns([5, 1])
+    with directory_col:
+        folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="例如：/Users/你的用户名/Desktop/8月23日定位测照片")
+    with chooser_col:
+        st.write("")
+        if st.button("选择文件夹", width="stretch"):
+            selected = choose_macos_folder()
+            if selected:
+                st.session_state.folder = selected
+                st.rerun()
+    folder = Path(folder_text).expanduser() if folder_text else None
+    if folder_text != st.session_state.folder:
+        st.session_state.folder = folder_text
+    if folder and folder.is_dir():
+        images = image_paths(folder)
+        st.caption(f"已选择：{folder}；发现 {len(images)} 张可处理图片（jpg / jpeg / png / heic）。")
+    else:
+        images = []
+        if folder_text:
+            st.warning("该目录不存在或无法访问。")
 
-# 同一图片目录的复核进度在 App 重启后自动恢复。
-recovery_notice = st.empty()
-resolved_folder = str(folder.resolve()) if folder and folder.is_dir() else ""
-if resolved_folder and st.session_state.loaded_session_folder != resolved_folder and not st.session_state.records:
-    saved_session = load_review_session(folder)
-    st.session_state.loaded_session_folder = resolved_folder
-    if saved_session:
-        st.session_state.records = saved_session["records"]
-        st.session_state.item_rows = saved_session["item_rows"]
-        st.session_state.audit_log = saved_session["audit_log"]
-        st.session_state.resolved = saved_session["resolved"]
-        st.session_state.confirmed_warnings = saved_session["confirmed_warnings"]
-        st.session_state.reviewer = saved_session.get("reviewer", "") or st.session_state.reviewer
-        st.session_state.issues = {}
+    # 同一图片目录的复核进度在 App 重启后自动恢复。
+    recovery_notice = st.empty()
+    resolved_folder = str(folder.resolve()) if folder and folder.is_dir() else ""
+    if resolved_folder and st.session_state.loaded_session_folder != resolved_folder and not st.session_state.records:
+        saved_session = load_review_session(folder)
+        st.session_state.loaded_session_folder = resolved_folder
+        if saved_session:
+            st.session_state.records = saved_session["records"]
+            st.session_state.item_rows = saved_session["item_rows"]
+            st.session_state.audit_log = saved_session["audit_log"]
+            st.session_state.resolved = saved_session["resolved"]
+            st.session_state.confirmed_warnings = saved_session["confirmed_warnings"]
+            st.session_state.reviewer = saved_session.get("reviewer", "") or st.session_state.reviewer
+            st.session_state.issues = {}
+            for record in st.session_state.records:
+                source_path = folder / str(record.get("Source Image", ""))
+                record["Source Path"] = str(source_path.resolve())
+                if source_path.is_file():
+                    issues = prepare_mark_review(record, source_path, template, st.session_state.item_rows, st.session_state.resolved)
+                    if issues:
+                        st.session_state.issues[record["Source Image"]] = issues
+                refresh_status(record, students)
+            recovery_notice.info(f"已恢复上次进度：{len(st.session_state.records)} 张答题卡，{len(st.session_state.audit_log)} 条人工复核记录。")
+
+    st.subheader("开始扫描")
+    scan_button_label = "重新识别全部图片（清空当前复核进度）" if st.session_state.records else "开始识别"
+    scan_progress = st.empty()
+    if st.button(scan_button_label, type="primary", disabled=not images):
+        reset_review_widgets()
+        st.session_state.records, st.session_state.item_rows, st.session_state.issues, st.session_state.resolved, st.session_state.confirmed_warnings = [], [], {}, set(), set()
+        st.session_state.audit_log = []
+        st.session_state.part_expand_notices = {}
+        st.session_state.stable_review_sources = set()
+        progress = scan_progress.progress(0, text="正在准备扫描…")
+        for index, path in enumerate(images, 1):
+            progress.progress(index / len(images), text=f"正在处理 {index} / {len(images)}：{path.name}")
+            record, item_rows = scan_one(path, template, students)
+            st.session_state.records.append(record)
+            st.session_state.item_rows.extend(item_rows)
+            issues = prepare_mark_review(record, path, template, item_rows)
+            if issues:
+                st.session_state.issues[path.name] = issues
+                record["Low Answer Warning"] = low_answer_warning(record, item_rows, issues)
         for record in st.session_state.records:
-            source_path = folder / str(record.get("Source Image", ""))
-            record["Source Path"] = str(source_path.resolve())
-            if source_path.is_file():
-                issues = prepare_mark_review(record, source_path, template, st.session_state.item_rows, st.session_state.resolved)
-                if issues:
-                    st.session_state.issues[record["Source Image"]] = issues
             refresh_status(record, students)
-        recovery_notice.info(f"已恢复上次进度：{len(st.session_state.records)} 张答题卡，{len(st.session_state.audit_log)} 条人工复核记录。")
-
-st.subheader("开始扫描")
-scan_button_label = "重新识别全部图片（清空当前复核进度）" if st.session_state.records else "开始识别"
-scan_progress = st.empty()
-if st.button(scan_button_label, type="primary", disabled=not images):
-    reset_review_widgets()
-    st.session_state.records, st.session_state.item_rows, st.session_state.issues, st.session_state.resolved, st.session_state.confirmed_warnings = [], [], {}, set(), set()
-    st.session_state.audit_log = []
-    st.session_state.part_expand_notices = {}
-    st.session_state.stable_review_sources = set()
-    progress = scan_progress.progress(0, text="正在准备扫描…")
-    for index, path in enumerate(images, 1):
-        progress.progress(index / len(images), text=f"正在处理 {index} / {len(images)}：{path.name}")
-        record, item_rows = scan_one(path, template, students)
-        st.session_state.records.append(record)
-        st.session_state.item_rows.extend(item_rows)
-        issues = prepare_mark_review(record, path, template, item_rows)
-        if issues:
-            st.session_state.issues[path.name] = issues
-            record["Low Answer Warning"] = low_answer_warning(record, item_rows, issues)
-    for record in st.session_state.records:
-        refresh_status(record, students)
-    st.session_state.exports = None
-    persist_current_session()
-    progress.progress(1.0, text="扫描完成")
+        st.session_state.exports = None
+        persist_current_session()
+        progress.progress(1.0, text="扫描完成")
 
 @st.fragment
 def render_review_workspace(students: dict, template: dict) -> None:
@@ -1179,4 +1203,5 @@ def render_review_workspace(students: dict, template: dict) -> None:
 
 
 if st.session_state.records:
-    render_review_workspace(students, template)
+    with workbench:
+        render_review_workspace(students, template)
