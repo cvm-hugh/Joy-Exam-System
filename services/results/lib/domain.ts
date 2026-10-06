@@ -193,16 +193,17 @@ const admissionSchema = z
       .array(z.number().min(0).max(1))
       .length(6)
       .default([0, 0, 0, 0, 0, 0]),
-    oralInterviewCutoff: z.number().min(0).max(10000).nullable().default(null),
+    // Accept the legacy total cutoff when reading old files, then discard it below.
+    oralInterviewCutoff: z.number().min(0).max(10000).nullable().optional(),
     interviewMessage: shortText.default('Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程\n\n并取得「精修班」\n🏆口试选拔考试资格🏆'),
     courseMessage: shortText.default('Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程'),
     note: z.string().max(200).default(''),
   })
   .strict()
+  .transform(({ oralInterviewCutoff: _legacyTotalCutoff, ...admission }) => admission)
   .default(() => ({
     enabled: true,
     dimensionCutoffs: [0, 0, 0, 0, 0, 0],
-    oralInterviewCutoff: null,
     interviewMessage: 'Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程\n\n并取得「精修班」\n🏆口试选拔考试资格🏆',
     courseMessage: 'Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程',
     note: '',
@@ -378,7 +379,6 @@ export function defaultConfig(): Config {
     admission: {
       enabled: true,
       dimensionCutoffs: [0, 0, 0, 0, 0, 0],
-      oralInterviewCutoff: null,
       interviewMessage: 'Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程\n\n并取得「精修班」\n🏆口试选拔考试资格🏆',
       courseMessage: 'Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程',
       note: '',
@@ -423,8 +423,6 @@ export function gradeFor(
 }
 export function resultFor(student: Student, config: Config, isDemo: boolean) {
   const qualifiedForInterview =
-    (config.admission.oralInterviewCutoff === null ||
-      new Decimal(student.total).gte(config.admission.oralInterviewCutoff)) &&
     config.analysis.dimensions.every((dimension, index) => {
       const actual = dimension.parts.reduce(
         (sum, id) => sum.plus(student.scores[id]),

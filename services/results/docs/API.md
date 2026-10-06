@@ -52,4 +52,4 @@
 
 本地模拟数据保存在项目`.wrangler/`，不是浏览器localStorage。线上备份、审计记录、保留期清理需要根据最终部署方案补充。
 
-资格结果是套卷固定组成部分，默认计算和显示。旧 `admission.enabled=false` 在配置、模板及文件读取时规范为 true；总分线、六维线及文案保留原值。家长查询开放状态仍由 `published` 控制。
+资格结果是套卷固定组成部分，默认计算和显示。旧 `admission.enabled=false` 在配置、模板及文件读取时规范为 true；六维系数线及文案保留原值；旧 `oralInterviewCutoff` 只作输入兼容，读取时丢弃，不参与资格计算，也不出现在新导出套卷中。家长查询开放状态仍由 `published` 控制。

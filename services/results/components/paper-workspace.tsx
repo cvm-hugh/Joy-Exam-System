@@ -1291,23 +1291,10 @@ export function PaperWorkspace({
             {section === 'release' && (
               <>
                 <p className="muted">
-                  资格结果随本套试卷默认显示，无需另行启用。学生未达线时显示“高阶入学资格”；总分（可不填）及六个维度都达到分数线时，显示“精修班口试资格”。
+                  资格结果随本套试卷默认显示，无需另行启用。学生未达线时显示“高阶入学资格”；六个维度都达到对应系数线时，显示“精修班口试资格”。
                 </p>
                 {editing ? (
                   <div className="stack">
-                    <label htmlFor="paper-admission-total-cutoff">
-                      精修班口试资格总分线（选填；达到此分数）
-                      <Input
-                        id="paper-admission-total-cutoff"
-                        type="number"
-                        min={0}
-                        max={fullMark(draft.analysis)}
-                        step="0.1"
-                        value={draft.admission.oralInterviewCutoff ?? ''}
-                        disabled={busy}
-                        onChange={(e) => edit((d) => { d.admission.oralInterviewCutoff = e.target.value === '' ? null : Number(e.target.value); })}
-                      />
-                    </label>
                     <div className="stack">
                       <small className="muted">精修班口试资格六维系数线（六项均须大于等于）</small>
                       {draft.analysis.dimensions.map((item, index) => (
@@ -1344,7 +1331,7 @@ export function PaperWorkspace({
                     <div>
                       <small>资格发布页</small>
                       <strong>默认显示</strong>
-                      <span>{`${draft.admission.oralInterviewCutoff === null ? '不设总分线' : `总分达到 ${draft.admission.oralInterviewCutoff} 分`}，且六维均达线`}</span>
+                      <span>六个维度均达到对应系数线</span>
                     </div>
                     <div>
                       <small>当前考试 · 精修班口试资格过线人数</small>
@@ -1373,7 +1360,7 @@ export function PaperWorkspace({
                     <div>
                       <small>精修班口试资格说明</small>
                       <strong>{draft.admission.interviewMessage}</strong>
-                      <span>{draft.admission.note || '总分（如设置）及六个维度均达到分数线时，显示此资格。'}</span>
+                      <span>{draft.admission.note || '六个维度均达到对应系数线时，显示此资格。'}</span>
                     </div>
                   </div>
                 )}
