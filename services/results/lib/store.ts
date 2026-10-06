@@ -65,12 +65,21 @@ export class Store {
       count: row.count,
     };
   }
-  async saveConfig(config: Config, revision: number) {
+  async saveConfig(
+    config: Config,
+    revision: number,
+    paper?: { id: string; revision: number },
+  ) {
+    // Applying a saved paper must guard its version and the exam in the same write.
+    const paperGuard = paper
+      ? " AND EXISTS(SELECT 1 FROM templates WHERE id=? AND revision=? AND kind='paper')"
+      : '';
+    const bindings = paper ? [revision, paper.id, paper.revision] : [revision];
     const r = await this.db
       .prepare(
-        "UPDATE exam_state SET config=?,revision=revision+1 WHERE id=1 AND revision=? AND published='closed'",
+        "UPDATE exam_state SET config=?,revision=revision+1 WHERE id=1 AND revision=? AND published='closed'" + paperGuard,
       )
-      .bind(JSON.stringify(config), revision)
+      .bind(JSON.stringify(config), ...bindings)
       .run();
     if (!r.meta.changes) throw new Conflict();
   }

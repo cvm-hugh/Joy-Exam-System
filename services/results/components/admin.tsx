@@ -444,9 +444,7 @@ function AdminScreen() {
       </div>
       {admissionSummary && (
         <div className="notice" style={{ marginTop: 12 }}>
-          {admissionSummary.enabled
-            ? `精修班口试资格统计：${admissionSummary.interviewCount} / ${admissionSummary.total} 名学生达到当前分数线。`
-            : '资格发布尚未启用；启用并保存当前试卷配置后即可查看精修班口试资格人数。'}
+          {`精修班口试资格统计：${admissionSummary.interviewCount} / ${admissionSummary.total} 名学生达到当前分数线。`}
         </div>
       )}
       {informationStudent && <StudentInformationEditor
@@ -975,6 +973,30 @@ function AdminScreen() {
               }}
               onDirtyChange={setPaperDirty}
               onBusyChange={setBusy}
+              applyDisabled={locked || dirty || entryDirty || informationDirty}
+              onApply={async (paper) => {
+                if (locked) throw new Error('请先关闭查询，再应用试卷配置。');
+                if (dirty || entryDirty || informationDirty)
+                  throw new Error('请先保存当前页面配置和学生信息，再应用试卷。');
+                if (!(await confirm(
+                  `将“${paper.name}”的已保存版本用于当前考试？资格结果会按这套卷的总分线、六维线和文案显示，六维评价也使用本套卷配置。当前 ${snapshot.count} 名学生的名单及原始分数保留。`,
+                ))) return false;
+                await api('papers/apply', 'POST', {
+                  revision: snapshot.revision,
+                  paperTemplateId: paper.id,
+                  paperRevision: paper.revision,
+                  confirmApply: true,
+                });
+                await refresh();
+                setResult(null);
+                setImportDefaultInitialized(true);
+                setPaperTemplateId(paper.id);
+                setPaperRevision(paper.revision);
+                setFile(null);
+                setReplaceConfirmed(false);
+                setSuccess('本套卷已用于当前考试，资格结果和六维评价已按本套卷配置更新。');
+                return true;
+              }}
             />
           )}
           {tab === 'settings' && (

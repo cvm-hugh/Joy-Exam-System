@@ -57,7 +57,7 @@ async function resolvePaper(
     throw new ApiError('试卷模板已删除或不存在，请重新选择', 409);
   if (paper.revision !== Number(revision))
     throw new ApiError(
-      '这套试卷已更新。请刷新并重新选择模板、下载成绩表后再导入，当前学生不变。',
+      '这套试卷已更新。请刷新并重新选择已保存版本，当前考试与学生不变。',
       409,
     );
   return paper;
@@ -405,6 +405,36 @@ export async function handleApi(
       );
       return json({ ok: true });
     }
+    if (path === 'admin/papers/apply' && method === 'POST') {
+      closed(state);
+      const input = z.object({
+        revision: revisionSchema,
+        paperTemplateId: z.uuid(),
+        paperRevision: revisionSchema,
+        confirmApply: z.literal(true),
+      }).strict().parse(await body(request));
+      if (input.revision !== state.revision) throw new Conflict();
+      const paper = await resolvePaper(store, input.paperTemplateId, String(input.paperRevision));
+      if (!paper) throw new ApiError('请选择已保存的试卷模板', 422);
+      const config = configSchema.parse({
+        ...withPaper(state.config, paper.data),
+        paperSource: { id: paper.id, name: paper.name, revision: paper.revision },
+      });
+      if (
+        state.count &&
+        JSON.stringify(config.analysis) !== JSON.stringify(state.config.analysis) &&
+        incompatibleStudents(await store.allStudents(), config)
+      ) {
+        throw new ApiError('本套卷的Part结构或满分与当前成绩不兼容，未应用；请核对本次考试使用的试卷。', 409);
+      }
+      const refs = config.dimensions.flatMap((dimension) => dimension.evaluations.map((evaluation) => evaluation.image)).filter(Boolean);
+      for (const ref of new Set(refs)) {
+        if (!(await env.FILES.head(ref.slice('/api/assets/'.length))))
+          throw new ApiError('套卷引用的评价图片不存在，请重新导入套卷文件');
+      }
+      await store.saveConfig(config, input.revision, paper);
+      return json({ ok: true });
+    }
     if (path === 'admin/config' && method === 'PUT') {
       closed(state);
       const input = z
@@ -643,8 +673,6 @@ export async function handleApi(
     }
     if (path === 'admin/admission-summary' && method === 'GET') {
       const students = await store.allStudents();
-      if (!state.config.admission.enabled)
-        return json({ enabled: false, total: students.length, interviewCount: 0, interviewStudents: [] });
       const interviewStudents = students.filter(
         (student) =>
           resultFor(student, state.config, state.isDemoData).admission

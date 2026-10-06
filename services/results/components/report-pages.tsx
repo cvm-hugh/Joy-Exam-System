@@ -147,31 +147,25 @@ export function ReportPages({ result }: { result: Result }) {
         </div>
       </ReportPage>
 
-      <ReportPage number={2} title="资格结果" className={`standard-admission-page ${result.admission?.qualifiedForInterview ? 'is-interview' : 'is-course'}`}>
-        <div className="standard-admission-mark">{result.admission?.qualifiedForInterview ? '✦' : '✓'}</div>
-        {result.admission ? (
-          <>
-            {(() => {
-              const blocks = result.admission.message
-                .split(/\n\s*\n/)
-                .map((block) => block.trim())
-                .filter(Boolean);
-              const structured = blocks.length > 1;
-              return (
-                <div className="standard-admission-copy">
-                  <h1>{structured ? blocks[0] : 'Congratulations！🎉'}</h1>
-                  <p className="standard-admission-primary">{structured ? blocks[1] : blocks[0]}</p>
-                  {result.admission.qualifiedForInterview && blocks.length > 2 && (
-                    <p className="standard-admission-interview">{blocks.slice(2).join('\n\n')}</p>
-                  )}
-                </div>
-              );
-            })()}
-            {result.admission.note && <small>{result.admission.note}</small>}
-          </>
-        ) : (
-          <p>本套试卷暂未启用资格发布。</p>
-        )}
+      <ReportPage number={2} title="资格结果" className={`standard-admission-page ${result.admission.qualifiedForInterview ? 'is-interview' : 'is-course'}`}>
+        <div className="standard-admission-mark">{result.admission.qualifiedForInterview ? '✦' : '✓'}</div>
+        {(() => {
+          const blocks = result.admission.message
+            .split(/\n\s*\n/)
+            .map((block) => block.trim())
+            .filter(Boolean);
+          const structured = blocks.length > 1;
+          return (
+            <div className="standard-admission-copy">
+              <h1>{structured ? blocks[0] : 'Congratulations！🎉'}</h1>
+              <p className="standard-admission-primary">{structured ? blocks[1] : blocks[0]}</p>
+              {result.admission.qualifiedForInterview && blocks.length > 2 && (
+                <p className="standard-admission-interview">{blocks.slice(2).join('\n\n')}</p>
+              )}
+            </div>
+          );
+        })()}
+        {result.admission.note && <small>{result.admission.note}</small>}
       </ReportPage>
 
       <ReportPage number={3} title="六维能力图" className="standard-ability-page">
