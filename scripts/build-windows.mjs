@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { verifyStandaloneDependencies } from '../services/results/scripts/standalone-dependencies.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows 包需在 Windows x64 构建环境生成。');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,10 +61,12 @@ copy(join(root, 'services/scanner/resources'), join(stage, 'scanner/resources'))
 mkdirSync(join(stage, 'results/scripts'), { recursive: true });
 copy(join(results, 'scripts/start-node.mjs'), join(stage, 'results/scripts/start-node.mjs'));
 copy(join(results, 'dist/standalone'), join(stage, 'results/dist/standalone'));
+const resultDependencies = verifyStandaloneDependencies(join(stage, 'results/dist/standalone'));
+console.log('Packaged result dependencies:', JSON.stringify(resultDependencies));
 writeFileSync(join(stage, 'results/package.json'), JSON.stringify({ type: 'module', version }, null, 2) + '\n');
 writeFileSync(join(stage, 'build-manifest.json'), JSON.stringify({ application: '佳音考试管理', version, architecture: 'x64',
   target: ['Windows 10', 'Windows 11'], python: metadata.version, electron: desktopMetadata.devDependencies.electron,
-  commit: capture('git', ['rev-parse', 'HEAD']), scannerLockSha256: sha(join(root, 'services/scanner/requirements-lock.txt')) }, null, 2) + '\n');
+  commit: capture('git', ['rev-parse', 'HEAD']), resultDependencies, scannerLockSha256: sha(join(root, 'services/scanner/requirements-lock.txt')) }, null, 2) + '\n');
 npm(['run', 'check'], desktop);
 npm(['run', 'package'], desktop, { CSC_IDENTITY_AUTO_DISCOVERY: 'false' });
 const output = join(root, 'output/windows');
@@ -71,4 +74,5 @@ const artifacts = readdirSync(output).filter((name) => name.endsWith('.exe') || 
 if (!artifacts.some((name) => name.endsWith('-Setup.exe')) || !artifacts.some((name) => name.endsWith('.zip'))) throw new Error('Windows 构建产物不完整。');
 writeFileSync(join(output, 'SHA256SUMS.txt'), artifacts.map((name) => `${sha(join(output, name))}  ${name}\n`).join(''));
 copy(join(stage, 'build-manifest.json'), join(output, 'build-manifest.json'));
+run(python, [join(root, 'scripts/inspect-windows-package.py'), output, version]);
 console.log(`Windows 安装程序与便携包已生成：${output}`);

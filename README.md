@@ -2,7 +2,7 @@
 
 当前稳定发布版本：**V2.0（2.0.0）**。该版本集中阅卷状态操作、拆分 API 请求处理与 Excel 导出辅助代码，并加入 Python 源码静态编译检查。说明见 `docs/代码整理_2026-10-04.md`、`docs/V2.0发布说明_2026-10-04.md`。
 
-Windows 桌面预览版：**2.1.0-beta.1**，目标为 **Windows 10 / Windows 11 x64**。提供 EXE 安装程序和完整目录 ZIP，内置运行环境，使用者无需另装 Python/Node；实际 Win10/11 人工验收待进行。V2.0 稳定版的标签和发布材料继续保留。安装、数据与构建说明见 [Windows 桌面预览版](docs/windows-desktop.md)。
+Windows 桌面预览版：**2.1.0-beta.2**，目标为 **Windows 10 / Windows 11 x64**。提供 EXE 安装程序和完整目录 ZIP，内置运行环境，使用者无需另装 Python/Node；实际 Win10/11 人工验收待进行。V2.0 稳定版的标签和发布材料继续保留。安装、数据与构建说明见 [Windows 桌面预览版](docs/windows-desktop.md)。
 
 自 2026-10-02 起，本项目是唯一后续维护主线。阅卷和结果管理的源码、测试、配置、桌面入口与构建脚本均在此目录内维护；原有独立 App 保留为历史版本与回退材料。
 
@@ -45,7 +45,7 @@ npm run desktop:build
 
 macOS 的 `desktop:build` 当前仍生成供本机开发与验收使用的 App，依赖本项目目录和本机的 Python/Node 基础解释器。其他 Mac 的完整运行环境封装、签名和公证属于后续发布工作；现有 macOS 开发 ZIP 保持这一适用范围。
 
-Windows 的构建入口为 `npm run desktop:build:windows`，需在 Windows x64 环境运行，生成内置运行环境的安装程序和 ZIP 包，输出到 `output/windows/`。当前版本为 2.1.0-beta.1 预览版，实际 Win10/11 人工验收待进行。Windows 源码安装及构建命令见 [Windows 桌面预览版](docs/windows-desktop.md)。
+Windows 的构建入口为 `npm run desktop:build:windows`，需在 Windows x64 环境运行，生成内置运行环境的安装程序和 ZIP 包，输出到 `output/windows/`。当前版本为 2.1.0-beta.2 预览版，实际 Win10/11 人工验收待进行。Windows 源码安装及构建命令见 [Windows 桌面预览版](docs/windows-desktop.md)。
 
 Windows 应用数据按账户独立保存在 `%APPDATA%\佳音考试管理\runtime`，卸载会保留数据；原始照片仍保存在用户选择的目录，备份时应与运行数据、已导出文件一并保存。日志位于该数据目录的 `logs\desktop.log`，可从窗口“数据目录”打开。
 
