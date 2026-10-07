@@ -979,7 +979,7 @@ function AdminScreen() {
                 if (dirty || entryDirty || informationDirty)
                   throw new Error('请先保存当前页面配置和学生信息，再应用试卷。');
                 if (!(await confirm(
-                  `将“${paper.name}”的已保存版本用于当前考试？资格结果会按这套卷的六维系数线和文案显示，六维评价也使用本套卷配置。当前 ${snapshot.count} 名学生的名单及原始分数保留。`,
+                  `将“${paper.name}”的已保存版本用于当前考试？资格结果会按这套卷的六维系数线、选填总分线和文案显示，六维评价也使用本套卷配置。当前 ${snapshot.count} 名学生的名单及原始分数保留。`,
                 ))) return false;
                 await api('papers/apply', 'POST', {
                   revision: snapshot.revision,

@@ -148,6 +148,9 @@ export function PaperWorkspace({
   const papers = templates.filter((t) => t.kind === 'paper');
   const chosen = papers.find((t) => t.id === selected);
   const valid = draft ? paperTemplateSchema.safeParse(draft) : null;
+  const admissionRuleDescription = draft?.admission.oralInterviewCutoff == null
+    ? '当前资格不参考总分数，仅参考六维系数'
+    : `当前资格参考六维系数及总分，总分线为 ${draft.admission.oralInterviewCutoff} 分`;
   async function run(fn: () => Promise<void>) {
     setBusy(true);
     setError('');
@@ -1291,10 +1294,26 @@ export function PaperWorkspace({
             {section === 'release' && (
               <>
                 <p className="muted">
-                  资格结果随本套试卷默认显示，无需另行启用。学生未达线时显示“高阶入学资格”；六个维度都达到对应系数线时，显示“精修班口试资格”。
+                  资格结果随本套试卷默认显示，无需另行启用。六个维度均达到对应系数线，且达到已填写的总分线时，显示“精修班口试资格”；未达线时显示“高阶入学资格”。总分线留空时，只参考六维系数。
                 </p>
                 {editing ? (
                   <div className="stack">
+                    <label htmlFor="paper-admission-total-cutoff">
+                      精修班口试资格总分线（选填；留空时不参考总分）
+                      <Input
+                        id="paper-admission-total-cutoff"
+                        type="number"
+                        min={0}
+                        max={fullMark(draft.analysis)}
+                        step="0.1"
+                        value={draft.admission.oralInterviewCutoff ?? ''}
+                        placeholder="留空时仅参考六维系数"
+                        aria-describedby="paper-admission-rule-description"
+                        disabled={busy}
+                        onChange={(e) => edit((d) => { d.admission.oralInterviewCutoff = e.target.value === '' ? null : Number(e.target.value); })}
+                      />
+                      <small id="paper-admission-rule-description" className="muted">{admissionRuleDescription}</small>
+                    </label>
                     <div className="stack">
                       <small className="muted">精修班口试资格六维系数线（六项均须大于等于）</small>
                       {draft.analysis.dimensions.map((item, index) => (
@@ -1331,7 +1350,7 @@ export function PaperWorkspace({
                     <div>
                       <small>资格发布页</small>
                       <strong>默认显示</strong>
-                      <span>六个维度均达到对应系数线</span>
+                      <span>{admissionRuleDescription}；六项均须达线</span>
                     </div>
                     <div>
                       <small>当前考试 · 精修班口试资格过线人数</small>
@@ -1360,7 +1379,7 @@ export function PaperWorkspace({
                     <div>
                       <small>精修班口试资格说明</small>
                       <strong>{draft.admission.interviewMessage}</strong>
-                      <span>{draft.admission.note || '六个维度均达到对应系数线时，显示此资格。'}</span>
+                      <span>{draft.admission.note || `${admissionRuleDescription}；满足所设置的全部条件时，显示此资格。`}</span>
                     </div>
                   </div>
                 )}
