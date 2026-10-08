@@ -1,6 +1,6 @@
 {
   "name": "joy-exam-results",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.2",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -16,7 +16,9 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node scripts/smoke-local.mjs",
-    "desktop:build": "zsh scripts/build-macos-app.sh"
+    "desktop:build": "zsh scripts/build-macos-app.sh",
+    "build:local": "node scripts/build-local.mjs",
+    "start:local": "node scripts/start-node.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

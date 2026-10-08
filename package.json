@@ -1,6 +1,6 @@
 {
   "name": "joy-exam-management",
-  "version": "2.0.0",
+  "version": "2.1.0-beta.2",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -13,7 +13,9 @@
     "check:source": "node scripts/check-source-independence.mjs",
     "check": "npm run check:source && node scripts/check-python-source.mjs && npm --prefix services/results run typecheck && npm --prefix services/results run lint",
     "test": "zsh scripts/test-local.sh",
-    "test:review-ui": ".venv/bin/python -B scripts/verify-review-ui.py"
+    "test:review-ui": ".venv/bin/python -B scripts/verify-review-ui.py",
+    "desktop:build:windows": "node scripts/build-windows.mjs",
+    "desktop:check:windows": "npm --prefix desktop/windows run check && node --check scripts/build-windows.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

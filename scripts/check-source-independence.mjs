@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const excluded = new Set(['.git', '.local', '.venv', '.wrangler', '.next', '.vinext', 'node_modules', 'runtime', 'output', 'outputs', 'dist', 'build', 'docs', '__pycache__', 'coverage']);
-const codeExtensions = /\.(?:py|sh|swift|ts|tsx|js|mjs|json|html)$/;
+const codeExtensions = /\.(?:py|sh|swift|ts|tsx|js|cjs|mjs|json|html|yaml|yml)$/;
 const oldWorkspacePath = /\/Users\/contiference\/Documents\/ChatGPT\//;
 const issues = [];
 let count = 0;

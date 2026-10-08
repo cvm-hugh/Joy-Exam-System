@@ -49,12 +49,16 @@ export function PaperWorkspace({
   reload,
   onDirtyChange,
   onBusyChange,
+  onApply,
+  applyDisabled = false,
 }: {
   config: Config;
   templates: SavedTemplate[];
   reload: () => Promise<void>;
   onDirtyChange: (v: boolean) => void;
   onBusyChange?: (v: boolean) => void;
+  onApply?: (paper: Extract<SavedTemplate, { kind: 'paper' }>) => Promise<boolean>;
+  applyDisabled?: boolean;
 }) {
   const confirm = useConfirm();
   const [selected, setSelected] = useState('');
@@ -79,6 +83,7 @@ export function PaperWorkspace({
     interviewStudents: { examNo: string; name: string; branch: string }[];
   } | null>(null);
   const [importing, setImporting] = useState(false);
+  const [importedFile, setImportedFile] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<EvaluationImport | null>(null);
   const [defaultInitialized, setDefaultInitialized] = useState(false);
@@ -133,7 +138,7 @@ export function PaperWorkspace({
     return () => {
       active = false;
     };
-  }, [section]);
+  }, [section, config]);
   useEffect(() => {
     if (!dirty) return;
     const handler = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -143,6 +148,9 @@ export function PaperWorkspace({
   const papers = templates.filter((t) => t.kind === 'paper');
   const chosen = papers.find((t) => t.id === selected);
   const valid = draft ? paperTemplateSchema.safeParse(draft) : null;
+  const admissionRuleDescription = draft?.admission.oralInterviewCutoff == null
+    ? '当前资格不参考总分数，仅参考六维系数'
+    : `当前资格参考六维系数及总分，总分线为 ${draft.admission.oralInterviewCutoff} 分`;
   async function run(fn: () => Promise<void>) {
     setBusy(true);
     setError('');
@@ -183,6 +191,7 @@ export function PaperWorkspace({
     setPreview(null);
     setFile(null);
     setImporting(false);
+    setImportedFile(false);
     setError('');
     setNotice('');
   }
@@ -200,6 +209,7 @@ export function PaperWorkspace({
       else {
         setDraft(null);
         setLoaded(null);
+        setImportedFile(false);
         setEditing(false);
         setPreview(null);
         setFile(null);
@@ -211,12 +221,15 @@ export function PaperWorkspace({
     if (!draft) return;
     const title = templateNameSchema.parse(asCopy ? copyName : name);
     const data = paperTemplateSchema.parse(draft);
+    const applyAfterSave = importedFile && !asCopy && !!onApply;
     let id = loaded?.id ?? '';
     let revision = (loaded?.revision ?? -1) + 1;
     if (loaded && !asCopy) {
       if (
         !(await confirm(
-          `保存“${title}”的默认版本？本套卷的全部配套内容一起保存，供后续导入使用；当前已导入学生结果不变。保存模板后，需重新导入学生成绩才可生效。`,
+          onApply
+            ? `保存“${title}”的默认版本？本套卷的全部配套内容一起保存；保存后可点击“用于当前考试”应用，当前学生结果不会自动改动。`
+            : `保存“${title}”的默认版本？本套卷的全部配套内容一起保存，供后续导入使用；当前已导入学生结果不变。保存模板后，需重新导入学生成绩才可生效。`,
         ))
       )
         return;
@@ -252,9 +265,18 @@ export function PaperWorkspace({
     setPreview(null);
     setImporting(false);
     setNotice(
-      '已保存为这套试卷的默认版本。保存模板后，需重新导入学生成绩才可生效；当前学生结果未改动。',
+      onApply
+        ? '已保存为这套试卷的默认版本。可点击“用于当前考试”更新资格和评价；当前学生结果未改动。'
+        : '已保存为这套试卷的默认版本。保存模板后，需重新导入学生成绩才可生效；当前学生结果未改动。',
     );
     await reload();
+    if (applyAfterSave && onApply) {
+      setImportedFile(false);
+      const applied = await onApply(saved);
+      setNotice(applied
+        ? '导入的套卷已保存并用于当前考试，资格结果默认显示。'
+        : '套卷已保存；尚未用于当前考试，可点击“用于当前考试”继续。');
+    }
   }
   async function download(filled: boolean) {
     if (!draft) return;
@@ -342,8 +364,9 @@ export function PaperWorkspace({
     enter(replacePaperImageRefs(bundle.paper, replacements), null, bundle.name);
     setSelected('');
     setEditing(true);
+    setImportedFile(true);
     setNotice(
-      `已导入“${bundle.name}”并打开为可编辑副本。确认内容后点击“保存本套卷”，不会自动覆盖已有模板。`,
+      `已导入“${bundle.name}”并打开为可编辑副本。资格结果默认显示；确认内容后点击“保存并用于当前考试”，会使用本套卷的分数线和评价，不覆盖已有模板。`,
     );
   }
   return (
@@ -512,12 +535,27 @@ export function PaperWorkspace({
               </span>
               <Button
                 className="template-primary"
-                disabled={busy || !dirty || !name.trim() || !valid?.success}
+                disabled={busy || !dirty || !name.trim() || !valid?.success || (importedFile && !!onApply && applyDisabled)}
                 onClick={() => void run(() => save())}
               >
                 <Save />
-                保存本套卷
+                {importedFile && onApply ? '保存并用于当前考试' : '保存本套卷'}
               </Button>
+              {onApply && loaded && (
+                <Button
+                  variant="outline"
+                  disabled={busy || dirty || applyDisabled}
+                  onClick={() => void run(async () => {
+                    if (await onApply(loaded))
+                      setNotice('本套卷已用于当前考试，资格结果默认显示。');
+                  })}
+                >
+                  用于当前考试
+                </Button>
+              )}
+              {onApply && applyDisabled && (
+                <span className="mini-label">请先关闭查询并保存当前页面或学生信息，再应用套卷。</span>
+              )}
             </div>
           </section>
           <nav className="paper-sections" aria-label="本套卷教学配置">
@@ -1256,23 +1294,12 @@ export function PaperWorkspace({
             {section === 'release' && (
               <>
                 <p className="muted">
-                  资格发布跟随本套试卷保存。学生默认显示“高阶入学资格”；总分（可不填）及六个维度都达到分数线时，显示“精修班口试资格”。
+                  资格结果随本套试卷默认显示，无需另行启用。六个维度均达到对应系数线，且达到已填写的总分线时，显示“精修班口试资格”；未达线时显示“高阶入学资格”。总分线留空时，只参考六维系数。
                 </p>
                 {editing ? (
                   <div className="stack">
-                    <label className="check-row" htmlFor="paper-admission-enabled">
-                      <Checkbox
-                        id="paper-admission-enabled"
-                        checked={draft.admission.enabled}
-                        disabled={busy}
-                        onCheckedChange={(value) =>
-                          edit((d) => { d.admission.enabled = value === true; })
-                        }
-                      />
-                      <span>启用资格发布页</span>
-                    </label>
                     <label htmlFor="paper-admission-total-cutoff">
-                      精修班口试资格总分线（选填；达到此分数）
+                      精修班口试资格总分线（选填；留空时不参考总分）
                       <Input
                         id="paper-admission-total-cutoff"
                         type="number"
@@ -1280,9 +1307,12 @@ export function PaperWorkspace({
                         max={fullMark(draft.analysis)}
                         step="0.1"
                         value={draft.admission.oralInterviewCutoff ?? ''}
-                        disabled={busy || !draft.admission.enabled}
+                        placeholder="留空时仅参考六维系数"
+                        aria-describedby="paper-admission-rule-description"
+                        disabled={busy}
                         onChange={(e) => edit((d) => { d.admission.oralInterviewCutoff = e.target.value === '' ? null : Number(e.target.value); })}
                       />
+                      <small id="paper-admission-rule-description" className="muted">{admissionRuleDescription}</small>
                     </label>
                     <div className="stack">
                       <small className="muted">精修班口试资格六维系数线（六项均须大于等于）</small>
@@ -1296,7 +1326,7 @@ export function PaperWorkspace({
                             max={1}
                             step="0.1"
                             value={draft.admission.dimensionCutoffs[index]}
-                            disabled={busy || !draft.admission.enabled}
+                            disabled={busy}
                             onChange={(e) => edit((d) => { d.admission.dimensionCutoffs[index] = Number(e.target.value); })}
                           />
                         </label>
@@ -1304,29 +1334,29 @@ export function PaperWorkspace({
                     </div>
                     <label htmlFor="paper-admission-interview-message">
                       精修考试资格文案
-                      <Textarea id="paper-admission-interview-message" rows={6} value={draft.admission.interviewMessage} maxLength={160} disabled={busy || !draft.admission.enabled} onChange={(e) => edit((d) => { d.admission.interviewMessage = e.target.value; })}/>
+                      <Textarea id="paper-admission-interview-message" rows={6} value={draft.admission.interviewMessage} maxLength={160} disabled={busy} onChange={(e) => edit((d) => { d.admission.interviewMessage = e.target.value; })}/>
                     </label>
                     <label htmlFor="paper-admission-course-message">
                       高阶入学资格文案
-                      <Textarea id="paper-admission-course-message" rows={4} value={draft.admission.courseMessage} maxLength={160} disabled={busy || !draft.admission.enabled} onChange={(e) => edit((d) => { d.admission.courseMessage = e.target.value; })}/>
+                      <Textarea id="paper-admission-course-message" rows={4} value={draft.admission.courseMessage} maxLength={160} disabled={busy} onChange={(e) => edit((d) => { d.admission.courseMessage = e.target.value; })}/>
                     </label>
                     <label htmlFor="paper-admission-note">
                       补充说明（可留空）
-                      <Textarea id="paper-admission-note" value={draft.admission.note} maxLength={200} disabled={busy || !draft.admission.enabled} onChange={(e) => edit((d) => { d.admission.note = e.target.value; })}/>
+                      <Textarea id="paper-admission-note" value={draft.admission.note} maxLength={200} disabled={busy} onChange={(e) => edit((d) => { d.admission.note = e.target.value; })}/>
                     </label>
                   </div>
                 ) : (
                   <div className="paper-summary">
                     <div>
                       <small>资格发布页</small>
-                      <strong>{draft.admission.enabled ? '已启用' : '暂不显示'}</strong>
-                      <span>{draft.admission.enabled ? `${draft.admission.oralInterviewCutoff === null ? '不设总分线' : `总分达到 ${draft.admission.oralInterviewCutoff} 分`}，且六维均达线` : '填写分数线后再启用'}</span>
+                      <strong>默认显示</strong>
+                      <span>{admissionRuleDescription}；六项均须达线</span>
                     </div>
                     <div>
-                      <small>精修班口试资格过线人数</small>
-                      <strong>{admissionSummary?.enabled ? `${admissionSummary.interviewCount} / ${admissionSummary.total} 人` : '暂无统计'}</strong>
-                      <span>{admissionSummary?.enabled ? '按当前已导入的学生成绩计算' : '启用资格发布并导入学生成绩后显示'}</span>
-                      {admissionSummary?.enabled && (
+                      <small>当前考试 · 精修班口试资格过线人数</small>
+                      <strong>{admissionSummary ? `${admissionSummary.interviewCount} / ${admissionSummary.total} 人` : '暂无统计'}</strong>
+                      <span>{admissionSummary ? '按当前考试已应用的分数线及学生成绩计算' : '当前考试资格统计暂未载入'}</span>
+                      {admissionSummary && (
                         <div className="admission-student-list" aria-label="精修班口试资格过线学生名单">
                           {admissionSummary.interviewStudents.length ? (
                             admissionSummary.interviewStudents.map((student) => (
@@ -1349,7 +1379,7 @@ export function PaperWorkspace({
                     <div>
                       <small>精修班口试资格说明</small>
                       <strong>{draft.admission.interviewMessage}</strong>
-                      <span>{draft.admission.note || '总分（如设置）及六个维度均达到分数线时，显示此资格。'}</span>
+                      <span>{draft.admission.note || `${admissionRuleDescription}；满足所设置的全部条件时，显示此资格。`}</span>
                     </div>
                   </div>
                 )}

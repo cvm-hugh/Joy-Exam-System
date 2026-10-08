@@ -187,11 +187,13 @@ const pageCopySchema = z
   .strict();
 const admissionSchema = z
   .object({
-    enabled: z.boolean().default(false),
+    // Keep the legacy field readable; qualification results are always part of a paper.
+    enabled: z.boolean().default(true).transform((): boolean => true),
     dimensionCutoffs: z
       .array(z.number().min(0).max(1))
       .length(6)
       .default([0, 0, 0, 0, 0, 0]),
+    // A blank total cutoff disables the total-score condition; keep saved numeric cutoffs.
     oralInterviewCutoff: z.number().min(0).max(10000).nullable().default(null),
     interviewMessage: shortText.default('Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程\n\n并取得「精修班」\n🏆口试选拔考试资格🏆'),
     courseMessage: shortText.default('Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程'),
@@ -199,7 +201,7 @@ const admissionSchema = z
   })
   .strict()
   .default(() => ({
-    enabled: false,
+    enabled: true,
     dimensionCutoffs: [0, 0, 0, 0, 0, 0],
     oralInterviewCutoff: null,
     interviewMessage: 'Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程\n\n并取得「精修班」\n🏆口试选拔考试资格🏆',
@@ -375,7 +377,7 @@ export function defaultConfig(): Config {
     coverText: '',
     coverFooter: '',
     admission: {
-      enabled: false,
+      enabled: true,
       dimensionCutoffs: [0, 0, 0, 0, 0, 0],
       oralInterviewCutoff: null,
       interviewMessage: 'Congratulations！🎉\n\n恭喜你获得「进阶班」入学资格\n可继续学习佳音课程\n\n并取得「精修班」\n🏆口试选拔考试资格🏆',
@@ -421,6 +423,23 @@ export function gradeFor(
   return index < 0 ? null : index;
 }
 export function resultFor(student: Student, config: Config, isDemo: boolean) {
+  const qualifiedForInterview =
+    (config.admission.oralInterviewCutoff === null ||
+      new Decimal(student.total).gte(config.admission.oralInterviewCutoff)) &&
+    config.analysis.dimensions.every((dimension, index) => {
+      const actual = dimension.parts.reduce(
+        (sum, id) => sum.plus(student.scores[id]),
+        new Decimal(0),
+      );
+      const max = dimension.parts.reduce(
+        (sum, id) =>
+          sum.plus(
+            config.analysis.parts.find((p) => p.id === id)!.max,
+          ),
+        new Decimal(0),
+      );
+      return actual.div(max).gte(config.admission.dimensionCutoffs[index]);
+    });
   return {
     name: student.name,
     branch: student.branch || 'XX 分校',
@@ -438,35 +457,14 @@ export function resultFor(student: Student, config: Config, isDemo: boolean) {
     coverText: config.coverText,
     coverFooter: config.coverFooter,
     paragraphTitles: config.paragraphTitles,
-    admission: config.admission.enabled
-      ? (() => {
-          const qualifiedForInterview =
-            (config.admission.oralInterviewCutoff === null ||
-              new Decimal(student.total).gte(config.admission.oralInterviewCutoff)) &&
-            config.analysis.dimensions.every((dimension, index) => {
-              const actual = dimension.parts.reduce(
-                (sum, id) => sum.plus(student.scores[id]),
-                new Decimal(0),
-              );
-              const max = dimension.parts.reduce(
-                (sum, id) =>
-                  sum.plus(
-                    config.analysis.parts.find((p) => p.id === id)!.max,
-                  ),
-                new Decimal(0),
-              );
-              return actual.div(max).gte(config.admission.dimensionCutoffs[index]);
-            });
-          return {
-            qualifiedForInterview,
-            qualification: qualifiedForInterview ? '精修班口试资格' : '高阶入学资格',
-            message: qualifiedForInterview
-              ? config.admission.interviewMessage
-              : config.admission.courseMessage,
-            note: config.admission.note,
-          };
-        })()
-      : null,
+    admission: {
+      qualifiedForInterview,
+      qualification: qualifiedForInterview ? '精修班口试资格' : '高阶入学资格',
+      message: qualifiedForInterview
+        ? config.admission.interviewMessage
+        : config.admission.courseMessage,
+      note: config.admission.note,
+    },
     dimensions: config.analysis.dimensions.map((d, i) => {
       const actual = d.parts.reduce(
         (sum, id) => sum.plus(student.scores[id]),

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import subprocess
-from shutil import copy2
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ import cv2
 import numpy as np
 
 from app.constants import CONFIG_DIR, FILL_THRESHOLD, OUTPUT_DIR
+from app.platform_files import choose_folder, open_original_image, save_as
 from app.roster_import import normalize_exam_id
 from app.scanner import (RESULT_COLUMNS, _read_image, _read_one, export_results,
                          load_answer_key, scan_image, normalize, student_record,
@@ -61,47 +61,17 @@ def required_files() -> dict[str, Path]:
     return {"学生名单": CONFIG_DIR / "student_list.xlsx", "答题卡模板": CONFIG_DIR / "template.json", "标准答案": CONFIG_DIR / "answer_key.json"}
 
 
+# 保留历史 Python 调用入口；界面改用平台无关的文件操作。
 def choose_macos_folder() -> str | None:
-    script = 'POSIX path of (choose folder with prompt "选择答题卡照片所在文件夹")'
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
-    return result.stdout.strip().rstrip("/") if result.returncode == 0 else None
+    return choose_folder()
 
 
 def save_as_macos(source_file: Path, default_name: str | None = None) -> Path | None:
-    """通过 macOS 原生“另存为”对话框复制导出文件；取消时返回 None。"""
-    suggested_name = (default_name or source_file.name).replace("\\", "\\\\").replace('"', '\\"')
-    script = f'POSIX path of (choose file name with prompt "另存最终成绩" default name "{suggested_name}")'
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        return None
-    destination = Path(result.stdout.strip())
-    if destination.suffix.lower() != ".xlsx":
-        destination = destination.with_suffix(".xlsx")
-    if destination.exists():
-        raise FileExistsError(f"目标文件已存在：{destination.name}。请在另存为对话框中使用其他文件名。")
-    copy2(source_file, destination)
-    return destination
+    return save_as(source_file, default_name)
 
 
 def open_original_in_preview(source_file: Path) -> tuple[bool, str]:
-    """用 macOS“预览”直接打开扫描时使用的原始图片。"""
-    if not source_file.is_file():
-        return False, f"找不到原始图片：{source_file}"
-    try:
-        result = subprocess.run(
-            # -n starts an isolated Preview instance; -F prevents macOS from
-            # restoring the images that were open in the previous instance.
-            ["open", "-n", "-F", "-a", "Preview", str(source_file)],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"无法打开原始图片：{exc}"
-    if result.returncode != 0:
-        detail = result.stderr.strip() or "macOS 未能启动“预览”。"
-        return False, f"无法打开原始图片：{detail}"
-    return True, f"已用“预览”打开原始图片：{source_file.name}。可直接编辑后保存。"
+    return open_original_image(source_file)
 
 
 def image_paths(folder: Path) -> list[Path]:
@@ -145,6 +115,18 @@ def exam_id_crop(path: Path, template: dict[str, Any]) -> np.ndarray | None:
         y1 = min(image.shape[0], matrix_bottom + 40)
         return cv2.cvtColor(image[y0:y1, x0:x1], cv2.COLOR_BGR2RGB)
     except Exception:
+        return None
+
+
+def part_review_crop(path: Path, template: dict[str, Any], section: str) -> np.ndarray | None:
+    """裁切整个 Part 的全部填涂框，用于就近确认空白候选。"""
+    try:
+        root, part, _ = next(group for group in QUESTION_GROUPS if group[2] == section)
+        boxes = [box for options in template[root][part].values() for box in options.values()]
+        if not boxes:
+            return None
+        return _crop(normalize(_read_image(path), template), boxes)
+    except (OSError, KeyError, StopIteration, ValueError, cv2.error):
         return None
 
 
@@ -195,7 +177,7 @@ def prepare_mark_review(
                 blank_candidate = max(read.ratios.values()) < FILL_THRESHOLD
                 unread_candidates.append({"key": f"question:{section}:{number}", "title": f"题号 {number}", "detail": "当前识别结果：空白候选" if blank_candidate else "当前识别结果：无法明确判断", "choices": list(options.keys()), "crop": _crop(image, list(options.values())), "section": section, "number": number, "blank_candidate": blank_candidate})
         if unread_candidates and len(unread_candidates) == len(template[template_root][part]) and section not in expanded_sections:
-            issues.append({"key": f"part_empty:{section}", "kind": "part_empty", "title": PART_LABELS[section], "detail": f"{len(unread_candidates)}/{len(unread_candidates)} 无有效作答（空白候选）", "section": section, "question_issues": unread_candidates, "question_range": f"{unread_candidates[0]['number']}-{unread_candidates[-1]['number']}"})
+            issues.append({"key": f"part_empty:{section}", "kind": "part_empty", "title": PART_LABELS[section], "detail": f"{len(unread_candidates)}/{len(unread_candidates)} 无有效作答（空白候选）", "section": section, "crop": _crop(image, [box for options in template[template_root][part].values() for box in options.values()]), "question_issues": unread_candidates, "question_range": f"{unread_candidates[0]['number']}-{unread_candidates[-1]['number']}"})
         else:
             # 机器的 BLANK 只表示没有检测到足够强的填涂信号，不能等同于
             # 学生确实未作答。非整 Part 的孤立 BLANK 也必须逐题人工确认。

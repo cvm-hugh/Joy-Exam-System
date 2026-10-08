@@ -173,7 +173,9 @@ def _read_image(path: Path) -> np.ndarray:
             return cv2.cvtColor(np.array(Image.open(path).convert("RGB")), cv2.COLOR_RGB2BGR)
         except ImportError as exc:
             raise ValueError("HEIC support requires pillow-heif") from exc
-    image = cv2.imread(str(path))
+    # OpenCV 的路径 API 在 Windows 上不能稳定读取中文文件名。
+    # 由 Python 读取字节，再解码图片，保留相同的 BGR 识别输入。
+    image = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Unreadable image")
     return image

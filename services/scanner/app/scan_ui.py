@@ -5,7 +5,6 @@ import getpass
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -31,14 +30,15 @@ from app.legacy_profile import answers_to_legacy_key, legacy_v1_package
 from app.roster_import import generate_roster_template, normalize_exam_id, read_roster, roster_source_filename, save_roster_snapshot
 from app.student_information import student_information_issues
 from app.review_store import delete_review_session, load_review_session
-from app.scanner import RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, load_students, load_template, update_score_totals
-from app.ui_helpers import (answer_card_preview, choose_macos_folder,
-                            exam_id_crop, image_paths, issue_key, low_answer_warning,
-                            open_original_in_preview,
-                            prepare_mark_review, required_files, review_item_title,
-                            save_as_macos, save_current_results, scan_one)
+from app.platform_files import (choose_folder, image_editor_label, open_local_file,
+                                open_original_image, save_as)
+from app.scanner import (RESULT_COLUMNS, SUMMARY_SEPARATOR_COLUMN, export_results,
+                         load_students, load_template, update_score_totals)
+from app.ui_helpers import (answer_card_preview, exam_id_crop, image_paths, issue_key,
+                            low_answer_warning, prepare_mark_review, required_files,
+                            review_item_title, part_review_crop, save_current_results, scan_one)
 
-st.set_page_config(page_title="佳音考试管理 · 阅卷", layout="wide")
+st.set_page_config(page_title="佳音考试管理 · 阅卷", page_icon=PROJECT_ROOT / "resources" / "app-icon.png", layout="wide")
 st.markdown(
     """
     <style>
@@ -94,13 +94,13 @@ def render_display_controls() -> None:
                 horizontal=True,
                 key="ui_zoom",
                 format_func=lambda value: f"{value}%",
-                help="只缩放软件工作台，不会压缩答题卡图片或影响识别。",
+                help="100%为标准显示大小；只缩放工作台，不会压缩原始答题卡图片或影响识别。",
             )
         components.html(
             Path(__file__).with_name("display_controls.html").read_text(encoding="utf-8"),
             height=0,
         )
-    zoom = int(st.session_state.ui_zoom) / 100
+    zoom = 0.75 * int(st.session_state.ui_zoom) / 100
     st.html(
         f"""
         <style>
@@ -137,7 +137,7 @@ def persist_current_session() -> None:
 
 
 def ensure_reviewer() -> str:
-    """人工修正必须留下操作人；界面未填时使用当前 Mac 账户。"""
+    """人工修正必须留下操作人；界面未填时使用当前系统账户。"""
     return review_session().ensure_reviewer()
 
 
@@ -162,6 +162,13 @@ def cached_exam_id_crop(path_text: str, source_version: int, template_data: dict
     return exam_id_crop(Path(path_text), template_data)
 
 
+@st.cache_data(show_spinner=False)
+def cached_part_review_crop(path_text: str, source_version: int, template_data: dict, section: str):
+    """兼容已打开会话中的旧候选，并缓存未改变的 Part 局部图。"""
+    del source_version
+    return part_review_crop(Path(path_text), template_data, section)
+
+
 def append_audit(record: dict, *, change_type: str, target: str, original_value: object, corrected_value: object, note: str='') -> dict:
     return review_session().append_audit(record, change_type=change_type, target=target, original_value=original_value, corrected_value=corrected_value, note=note)
 
@@ -184,9 +191,10 @@ def render_roster_setup() -> None:
     st.caption("模板保留原始名单的全部列；“精修笔试通过”和六维得分系数在本阶段留空，由结果管理系统后续填入。")
     if st.button("生成《学业水平测试统计名单-模板》"):
         generate_roster_template(roster_template)
-        opened = subprocess.run(["open", str(roster_template)], capture_output=True).returncode == 0
+        opened = open_local_file(roster_template)[0]
         message = "学生名单模板已生成并打开。" if opened else f"已生成：{roster_template}"
         st.success(message)
+    st.caption("若文件已包含各 Part 得分和总分，请在结果管理的“成绩导入”中载入；本入口只载入名单，不恢复已批阅结果或逐题修正记录。")
     uploaded = st.file_uploader("选择学生名单 .xlsx", type=["xlsx"], key="roster_upload")
     if st.button("载入学生名单", type="primary", disabled=uploaded is None):
         temporary_path = save_uploaded_xlsx(uploaded)
@@ -217,7 +225,7 @@ def render_answer_setup(template: dict) -> None:
     st.info("正确答案不包含在 App 中。请先生成答案录入表，填写后再导入。")
     if st.button("生成答案录入 Excel 模板", type="primary"):
         generate_answer_key_template(package, answer_template)
-        opened = subprocess.run(["open", str(answer_template)], capture_output=True).returncode == 0
+        opened = open_local_file(answer_template)[0]
         if opened:
             st.success("答案录入模板已生成并打开。填写 Correct Answer 列后保存，再回到此处导入。")
         else:
@@ -283,15 +291,19 @@ def render_exam_setup() -> None:
         folder_text = st.text_input(
             "答题卡照片所在目录",
             value=st.session_state.folder,
-            placeholder="例如：/Users/你的用户名/Desktop/本次定位测照片",
+            placeholder="答题卡照片文件夹的完整路径",
         )
     with chooser_col:
         st.write("")
         if st.button("选择文件夹", width="stretch", key="setup_choose_folder"):
-            selected = choose_macos_folder()
-            if selected:
-                st.session_state.folder = selected
-                st.rerun()
+            try:
+                selected = choose_folder(st.session_state.folder)
+            except OSError as exc:
+                st.error(f"无法选择文件夹：{exc}")
+            else:
+                if selected:
+                    st.session_state.folder = selected
+                    st.rerun()
     if folder_text != st.session_state.folder:
         st.session_state.folder = folder_text
     folder = Path(st.session_state.folder).expanduser() if st.session_state.folder else None
@@ -332,7 +344,7 @@ def open_result_source_image() -> None:
     if not isinstance(row_index, int) or not 0 <= row_index < len(records):
         st.session_state.preview_notice = (False, "无法定位该条扫描记录。")
         return
-    st.session_state.preview_notice = open_original_in_preview(Path(records[row_index]["Source Path"]))
+    st.session_state.preview_notice = open_original_image(Path(records[row_index]["Source Path"]))
 
 
 def rescan_modified_source(record: dict, template_data: dict, student_data: dict) -> None:
@@ -381,11 +393,11 @@ def show_source_file_name(record: dict, key: str) -> None:
         "等待图片保存…" if is_waiting else "修改图片并重新识别",
         key=f"edit_rescan_{key}",
         disabled=is_waiting,
-        help="用 Mac“预览”打开原图；保存修改后，软件会自动重新识别本张。",
+        help=f"用{image_editor_label()}打开原图；保存修改后，软件会自动重新识别本张。",
     ):
         path = Path(record["Source Path"])
         baseline = path.stat().st_mtime_ns if path.is_file() else 0
-        opened, message = open_original_in_preview(path)
+        opened, message = open_original_image(path)
         if not opened:
             st.error(message)
         else:
@@ -395,7 +407,7 @@ def show_source_file_name(record: dict, key: str) -> None:
             }
             st.session_state.image_rescan_notice = (
                 "info",
-                f"已打开 {record['File Name']}。请在“预览”中修改并保存；检测到保存后将自动重新识别。",
+                f"已打开 {record['File Name']}。请在{image_editor_label()}中修改，并保存到原路径和原文件名；检测到保存后将自动重新识别。",
             )
             st.rerun()
     st.caption("修改并保存原图后，软件只重新识别本张，不重扫整批。")
@@ -403,7 +415,7 @@ def show_source_file_name(record: dict, key: str) -> None:
 
 @st.fragment(run_every="1s")
 def watch_pending_image_rescan(template_data: dict, student_data: dict) -> None:
-    """监视“预览”中的原图保存，变更后自动重识别。"""
+    """监视图片编辑器中的原图保存，变更后自动重识别。"""
     pending = st.session_state.get("pending_image_rescan")
     if not pending:
         return
@@ -525,7 +537,9 @@ def render_card_overview(record: dict, template: dict) -> None:
         with id_column:
             id_image = cached_exam_id_crop(str(source_path), _source_version(source_path), template)
             if id_image is not None:
-                st.image(id_image, caption="考号区域", width="stretch")
+                # 保留基础信息两栏布局，考号缩略图只占原显示宽度的一半。
+                with st.columns(2, gap=None)[0]:
+                    st.image(id_image, caption="考号区域", width="stretch")
             else:
                 st.warning("无法生成考号区域截图；请查看右侧整张答题卡。")
         with card_column:
@@ -636,14 +650,18 @@ with workbench:
     st.subheader("选择照片目录")
     directory_col, chooser_col = st.columns([5, 1])
     with directory_col:
-        folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="例如：/Users/你的用户名/Desktop/8月23日定位测照片")
+        folder_text = st.text_input("照片所在目录", value=st.session_state.folder, placeholder="答题卡照片文件夹的完整路径")
     with chooser_col:
         st.write("")
         if st.button("选择文件夹", width="stretch"):
-            selected = choose_macos_folder()
-            if selected:
-                st.session_state.folder = selected
-                st.rerun()
+            try:
+                selected = choose_folder(st.session_state.folder)
+            except OSError as exc:
+                st.error(f"无法选择文件夹：{exc}")
+            else:
+                if selected:
+                    st.session_state.folder = selected
+                    st.rerun()
     folder = Path(folder_text).expanduser() if folder_text else None
     if folder_text != st.session_state.folder:
         st.session_state.folder = folder_text
@@ -704,6 +722,73 @@ with workbench:
         persist_current_session()
         progress.progress(1.0, text="扫描完成")
 
+
+def render_answer_review_item(record: dict, item: dict, students: dict, template: dict) -> None:
+    """单项替换槽保持原控件键与保存回调，布局由外层统一控制。"""
+    # 单题整套内容在同一替换槽内更新，避免提示改变时控件错位。
+    item_slot = st.empty()
+    with item_slot.container(key=review_item_key(record["Source Image"], item["key"])):
+        item_is_resolved = issue_key(record["Source Image"], item["key"]) in st.session_state.resolved
+        st.markdown("---")
+        if item.get("kind") == "part_empty":
+            st.write(f"Part：{item['title']}")
+            st.write(f"题目范围：{item['question_range']}")
+            st.write("复核结果：已确认整 Part 为空（已保存）" if item_is_resolved else f"检测结果：{item['detail']}")
+            crop = item.get("crop")
+            if crop is None:
+                source_path = Path(record.get("Source Path") or Path(st.session_state.folder) / record["Source Image"])
+                crop = cached_part_review_crop(str(source_path), _source_version(source_path), template, item["section"])
+            preview_col, confirm_col, expand_col = st.columns([2, 1, 1])
+            with preview_col:
+                if crop is not None:
+                    st.image(crop, caption=f"{item['title']}（{item['question_range']}）整 Part 局部图", width=200)
+                else:
+                    st.caption("无法裁切该 Part，请打开原图核对。")
+            with confirm_col:
+                st.button("确认整Part为空", disabled=item_is_resolved,
+                          key=f"confirm_part_{record['Source Image']}_{item['section']}",
+                          on_click=confirm_part_review, args=(record["Source Image"], item["key"], students))
+            with expand_col:
+                st.button("改为逐题检查" if item_is_resolved else "逐题检查",
+                          key=f"expand_part_{record['Source Image']}_{item['section']}",
+                          on_click=expand_part_review, args=(record["Source Image"], item["key"], students))
+            if item_is_resolved:
+                st.success("该 Part 已确认并保存。")
+            return
+        display_title = review_item_title(item, template)
+        st.write(f"题号或得分区域：{display_title}")
+        st.write(f"{'原始识别（已复核）' if item_is_resolved else '当前识别'}：{item['detail'].replace('当前识别结果：', '')}")
+        if item["crop"] is not None:
+            st.image(item["crop"], caption="当前题目局部图", width=250)
+        if item["key"] == "image":
+            return
+        choices = (["空白"] if item.get("allow_blank", True) else []) + item["choices"]
+        current_choice = current_mark_choice(record, item)
+        if not current_choice or current_choice not in choices:
+            current_choice = choices[0]
+        choice_index = choices.index(current_choice) if current_choice in choices else 0
+        # Use the same widget identity before and after saving.
+        choice_widget_key = f"choice_{record['Source Image']}_{item['key']}"
+        st.caption(f"✅ 已保存结果：{current_choice}" if item_is_resolved else "复核结果：尚未保存")
+        with st.container(key=f"review_anchor_{record['Source Image']}_{item['key']}"):
+            with st.form(
+                key=f"review_form_{record['Source Image']}_{item['key']}",
+                border=False,
+            ):
+                st.radio(
+                    "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
+                    choices,
+                    horizontal=True,
+                    index=choice_index,
+                    key=choice_widget_key,
+                )
+                st.form_submit_button(
+                    "修改并重新保存" if item_is_resolved else "保存该项修正",
+                    key=f"save_mark_{record['Source Image']}_{item['key']}",
+                    on_click=save_mark_review,
+                    args=(record["Source Image"], item["key"], students, choice_widget_key, display_title),
+                )
+
 @st.fragment
 def render_review_workspace(students: dict, template: dict) -> None:
     """Update review, scores and export controls together without rerunning setup."""
@@ -730,9 +815,9 @@ def render_review_workspace(students: dict, template: dict) -> None:
         if st.session_state.reviewer.strip():
             st.success(f"当前操作人：{st.session_state.reviewer.strip()}（下方所有人工修正都将记录此姓名）")
         else:
-            st.error(f"尚未填写姓名；如直接修正，系统将记录当前 Mac 账户“{getpass.getuser()}”。")
+            st.error(f"尚未填写姓名；如直接修正，系统将记录当前系统账户“{getpass.getuser()}”。")
     st.subheader("处理结果")
-    st.caption("点击 File Name 可用 Mac“预览”打开对应的原始图片，并可直接编辑后保存。")
+    st.caption(f"点击 File Name 可用{image_editor_label()}打开对应的原始图片，并可直接编辑后保存。")
     shown_columns = [column for column in RESULT_COLUMNS if column != SUMMARY_SEPARATOR_COLUMN]
     shown_columns.extend(("Needs Review", "Review Reason", "Status"))
     st.dataframe(
@@ -743,7 +828,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
             "File Name": st.column_config.ButtonColumn(
                 "File Name",
                 type="tertiary",
-                help="点击用 Mac“预览”打开原始图片，可直接编辑并保存。",
+                help=f"点击用{image_editor_label()}打开原始图片，可直接编辑并保存。",
                 on_click=open_result_source_image,
                 key="result_source_open",
             ),
@@ -829,61 +914,25 @@ def render_review_workspace(students: dict, template: dict) -> None:
                         if not unresolved and record["Source Image"] not in st.session_state.stable_review_sources:
                             missing_items_slot.info("该项没有可定位的填涂框；请检查原始照片是否完整。")
                         display_issues = issues if record["Source Image"] in st.session_state.stable_review_sources else unresolved
-                        for item in display_issues:
-                            # 单题整套内容在同一替换槽内更新，避免提示改变时控件错位。
-                            item_slot = st.empty()
-                            with item_slot.container(key=review_item_key(record["Source Image"], item["key"])):
-                                item_is_resolved = issue_key(record["Source Image"], item["key"]) in st.session_state.resolved
-                                st.markdown("---")
-                                if item.get("kind") == "part_empty":
-                                    st.write(f"Part：{item['title']}")
-                                    st.write(f"题目范围：{item['question_range']}")
-                                    st.write("复核结果：已确认整 Part 为空（已保存）" if item_is_resolved else f"检测结果：{item['detail']}")
-                                    part_col_1, part_col_2 = st.columns(2)
-                                    with part_col_1:
-                                        st.button("确认整Part为空", disabled=item_is_resolved,
-                                                  key=f"confirm_part_{record['Source Image']}_{item['section']}",
-                                                  on_click=confirm_part_review, args=(record["Source Image"], item["key"], students))
-                                    with part_col_2:
-                                        st.button("改为逐题检查" if item_is_resolved else "逐题检查",
-                                                  key=f"expand_part_{record['Source Image']}_{item['section']}",
-                                                  on_click=expand_part_review, args=(record["Source Image"], item["key"], students))
-                                    if item_is_resolved:
-                                        st.success("该 Part 已确认并保存。")
-                                    continue
-                                display_title = review_item_title(item, template)
-                                st.write(f"题号或得分区域：{display_title}")
-                                st.write(f"{'原始识别（已复核）' if item_is_resolved else '当前识别'}：{item['detail'].replace('当前识别结果：', '')}")
-                                if item["crop"] is not None:
-                                    st.image(item["crop"], caption="当前题目局部图", width=500)
-                                if item["key"] == "image":
-                                    continue
-                                choices = (["空白"] if item.get("allow_blank", True) else []) + item["choices"]
-                                current_choice = current_mark_choice(record, item)
-                                if not current_choice or current_choice not in choices:
-                                    current_choice = choices[0]
-                                choice_index = choices.index(current_choice) if current_choice in choices else 0
-                                # Use the same widget identity before and after saving.
-                                choice_widget_key = f"choice_{record['Source Image']}_{item['key']}"
-                                st.caption(f"✅ 已保存结果：{current_choice}" if item_is_resolved else "复核结果：尚未保存")
-                                with st.container(key=f"review_anchor_{record['Source Image']}_{item['key']}"):
-                                    with st.form(
-                                        key=f"review_form_{record['Source Image']}_{item['key']}",
-                                        border=False,
-                                    ):
-                                        st.radio(
-                                            "教师确认分数" if item.get("kind") == "grader_score" else "真实填涂",
-                                            choices,
-                                            horizontal=True,
-                                            index=choice_index,
-                                            key=choice_widget_key,
-                                        )
-                                        st.form_submit_button(
-                                            "修改并重新保存" if item_is_resolved else "保存该项修正",
-                                            key=f"save_mark_{record['Source Image']}_{item['key']}",
-                                            on_click=save_mark_review,
-                                            args=(record["Source Image"], item["key"], students, choice_widget_key, display_title),
-                                        )
+                        item_index = 0
+                        while item_index < len(display_issues):
+                            item = display_issues[item_index]
+                            if item.get("kind") == "part_empty" or item["key"] == "image":
+                                render_answer_review_item(record, item, students, template)
+                                item_index += 1
+                                continue
+                            row_items = []
+                            while item_index < len(display_issues) and len(row_items) < 3:
+                                item = display_issues[item_index]
+                                if item.get("kind") == "part_empty" or item["key"] == "image":
+                                    break
+                                row_items.append(item)
+                                item_index += 1
+                            row_key = review_item_key(record["Source Image"], row_items[0]["key"])
+                            with st.container(key=f"review_row_{row_key}"):
+                                for column, item in zip(st.columns(3), row_items):
+                                    with column:
+                                        render_answer_review_item(record, item, students, template)
                     else:
                         st.caption("暂无需要人工复核的答题内容项目。")
                 if record["Status"] == "OK" and record["Source Image"] in st.session_state.stable_review_sources:
@@ -956,7 +1005,7 @@ def render_review_workspace(students: dict, template: dict) -> None:
         try:
             result_file = save_current_results(records, st.session_state.item_rows, st.session_state.folder, st.session_state.audit_log)
             folder_name = Path(st.session_state.folder).name or "results"
-            saved_path = save_as_macos(result_file, default_name=f"{folder_name}_最终成绩.xlsx")
+            saved_path = save_as(result_file, default_name=f"{folder_name}_最终成绩.xlsx")
             st.success(f"已生成自动保存文件：\n\n{result_file}\n\n人工另存的默认文件名：{folder_name}_最终成绩.xlsx")
             if saved_path is not None:
                 st.success(f"已另存为：\n\n{saved_path}")
