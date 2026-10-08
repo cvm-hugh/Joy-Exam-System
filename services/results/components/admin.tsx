@@ -97,9 +97,9 @@ export function ResultView({
   return (
     <div className="stack">
       <ReportPreviewScaleControl scale={scale} onChange={setScale} />
-      <p className="mini-label">缩放仅影响预览，PDF仍按原尺寸导出。</p>
+      <p className="mini-label">缩放仅影响预览，导出的报告 PDF 仍按 100% 尺寸导出。</p>
       <div className="parent-preview report-preview-shell" style={{ '--report-preview-scale': scale / 100 } as CSSProperties}>
-        <ReportPages result={result} />
+        <ReportPages result={result} previewScale={scale} />
       </div>
     </div>
   );

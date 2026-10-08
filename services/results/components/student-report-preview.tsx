@@ -85,7 +85,7 @@ export function StudentReportPreview({
       </div>
       {expanded ? (
         <p className="mini-label student-preview-hint">
-          {layout === 'horizontal' ? '左右滚动查看完整报告。' : '上下滚动查看完整报告。'}缩放仅影响预览，PDF仍按原尺寸导出。
+          {layout === 'horizontal' ? '左右滚动查看完整报告。' : '上下滚动查看完整报告。'}缩放仅影响预览，导出的报告 PDF 仍按 100% 尺寸导出。
         </p>
       ) : (
         <output className="mini-label student-preview-hint">
@@ -97,7 +97,7 @@ export function StudentReportPreview({
       <section id={pagesId} className="student-preview-viewport" hidden={!expanded} aria-label={`${result.name}的报告页面`} tabIndex={expanded ? 0 : -1}>
         {expanded && (
           <div className="parent-preview report-preview-shell" style={{ '--report-preview-scale': scale / 100 } as CSSProperties}>
-            <ReportPages result={result} />
+            <ReportPages result={result} previewScale={scale} />
           </div>
         )}
       </section>

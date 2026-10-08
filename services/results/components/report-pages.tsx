@@ -2,12 +2,23 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 import type { Result } from '@/lib/domain';
+import type { ReportPreviewScale } from './report-preview-scale';
 
 const TITLE_FONTS = {
   rounded: "'Arial Rounded MT Bold', 'Arial Rounded MT', Arial, sans-serif",
   sans: "Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif",
   serif: "Georgia, 'Songti SC', SimSun, serif",
 };
+
+// 这些字号与报告样式中的固定字号对应；自定义标题另按配置计算。
+const REPORT_FONT_SIZES = [10, 12, 13, 14, 15, 18, 20, 21, 24, 38, 48] as const;
+
+function previewFontSize(baseSize: number, scale: ReportPreviewScale) {
+  if (scale === 100) return baseSize;
+  const ratio = scale / 100;
+  // 外层 zoom 缩放页面几何尺寸；抵消这一次字体缩放，使最终显示字号取整。
+  return Math.round(baseSize * ratio) / ratio;
+}
 
 function ReportPage({
   number,
@@ -32,7 +43,7 @@ function ReportPage({
   );
 }
 
-function AbilityRadar({ result }: { result: Result }) {
+function AbilityRadar({ result, previewScale }: { result: Result; previewScale: ReportPreviewScale }) {
   const cx = 160;
   const cy = 160;
   const radius = 88;
@@ -73,7 +84,7 @@ function AbilityRadar({ result }: { result: Result }) {
         return (
           <g key={dimension.id}>
             <circle cx={dotX} cy={dotY} r="3" fill="#fff" stroke="#d83232" strokeWidth="1.5" />
-            <text x={labelX} y={labelY - (nameLines.length - 1) * 7} textAnchor="middle" fill="#999" fontSize="12">
+            <text x={labelX} y={labelY - (nameLines.length - 1) * 7} textAnchor="middle" fill="#999" fontSize={previewFontSize(12, previewScale)}>
               {nameLines.map((line, lineIndex) => (
                 <tspan key={lineIndex} x={labelX} dy={lineIndex ? 15 : 0}>{line}</tspan>
               ))}
@@ -86,11 +97,11 @@ function AbilityRadar({ result }: { result: Result }) {
   );
 }
 
-function EvaluationPage({ result, index }: { result: Result; index: number }) {
+function EvaluationPage({ result, index, previewScale }: { result: Result; index: number; previewScale: ReportPreviewScale }) {
   const dimension = result.dimensions[index];
   const headingStyle: CSSProperties = {
     fontFamily: TITLE_FONTS[result.pageCopy.learningHeadingFont],
-    fontSize: `${result.pageCopy.learningHeadingSize}px`,
+    fontSize: `${previewFontSize(result.pageCopy.learningHeadingSize, previewScale)}px`,
   };
   return (
     <ReportPage
@@ -132,13 +143,16 @@ function EvaluationPage({ result, index }: { result: Result; index: number }) {
   );
 }
 
-export function ReportPages({ result }: { result: Result }) {
+export function ReportPages({ result, previewScale = 100 }: { result: Result; previewScale?: ReportPreviewScale }) {
+  const fontStyle = previewScale === 100 ? undefined : Object.fromEntries(
+    REPORT_FONT_SIZES.map((size) => [`--report-font-${size}`, `${previewFontSize(size, previewScale)}px`]),
+  ) as CSSProperties;
   const abilityHeadingStyle: CSSProperties = {
     fontFamily: TITLE_FONTS[result.pageCopy.abilityHeadingFont],
-    fontSize: `${result.pageCopy.abilityHeadingSize}px`,
+    fontSize: `${previewFontSize(result.pageCopy.abilityHeadingSize, previewScale)}px`,
   };
   return (
-    <div className="standard-report-pages">
+    <div className="standard-report-pages" style={fontStyle}>
       <ReportPage number={1} title="学生信息" className="standard-student-page">
         <p className="standard-exam-name">{result.examName}</p>
         <div className="standard-student-identity">
@@ -173,12 +187,12 @@ export function ReportPages({ result }: { result: Result }) {
           <h1 style={abilityHeadingStyle}>{result.pageCopy.abilityHeading}</h1>
           <p>{result.pageCopy.abilitySubtitle}</p>
         </header>
-        <AbilityRadar result={result} />
+        <AbilityRadar result={result} previewScale={previewScale} />
         <p className="standard-chart-note">得分系数=维度得分占维度总分的百分比</p>
       </ReportPage>
 
       {result.dimensions.map((dimension, index) => (
-        <EvaluationPage result={result} index={index} key={dimension.id} />
+        <EvaluationPage result={result} index={index} previewScale={previewScale} key={dimension.id} />
       ))}
     </div>
   );
