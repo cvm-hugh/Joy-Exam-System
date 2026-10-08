@@ -537,7 +537,9 @@ def render_card_overview(record: dict, template: dict) -> None:
         with id_column:
             id_image = cached_exam_id_crop(str(source_path), _source_version(source_path), template)
             if id_image is not None:
-                st.image(id_image, caption="考号区域", width="stretch")
+                # 保留基础信息两栏布局，考号缩略图只占原显示宽度的一半。
+                with st.columns(2, gap=None)[0]:
+                    st.image(id_image, caption="考号区域", width="stretch")
             else:
                 st.warning("无法生成考号区域截图；请查看右侧整张答题卡。")
         with card_column:
@@ -739,7 +741,7 @@ def render_answer_review_item(record: dict, item: dict, students: dict, template
             preview_col, confirm_col, expand_col = st.columns([2, 1, 1])
             with preview_col:
                 if crop is not None:
-                    st.image(crop, caption=f"{item['title']}（{item['question_range']}）整 Part 局部图", width=400)
+                    st.image(crop, caption=f"{item['title']}（{item['question_range']}）整 Part 局部图", width=200)
                 else:
                     st.caption("无法裁切该 Part，请打开原图核对。")
             with confirm_col:
