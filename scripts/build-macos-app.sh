@@ -32,6 +32,7 @@ mkdir -p "$OUTPUT_DIR" "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE"
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" /usr/bin/swiftc -O -module-cache-path "$MODULE_CACHE" -framework Cocoa -framework WebKit \
   "$MERGE_ROOT/desktop/UnifiedExamLauncher.swift" -o "$MACOS_DIR/$APP_NAME"
 cp "$MERGE_ROOT/desktop/server-wrapper.sh" "$RESOURCES_DIR/server-wrapper.sh"
+cp "$MERGE_ROOT/desktop/assets/app-icon.icns" "$RESOURCES_DIR/AppIcon.icns"
 # A development App uses only this unified project's source and dependencies.
 # A fully bundled distributable runtime is a separate release step.
 print -r -- "$MERGE_ROOT" > "$RESOURCES_DIR/project-root.txt"
@@ -43,6 +44,7 @@ APP_VERSION="$("$NODE_BIN" -p 'JSON.parse(require("fs").readFileSync(process.arg
 /usr/bin/plutil -insert CFBundleIdentifier -string "com.joyeducation.exam-management.unified" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -insert CFBundleExecutable -string "$APP_NAME" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -insert CFBundlePackageType -string "APPL" "$CONTENTS_DIR/Info.plist"
+/usr/bin/plutil -insert CFBundleIconFile -string "AppIcon.icns" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -insert CFBundleShortVersionString -string "$APP_VERSION" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -insert CFBundleVersion -string "$BUILD_VERSION" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -insert NSHighResolutionCapable -bool true "$CONTENTS_DIR/Info.plist"

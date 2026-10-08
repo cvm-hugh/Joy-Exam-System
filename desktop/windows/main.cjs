@@ -186,6 +186,7 @@ app.whenReady().then(async () => {
   logStream = fs.createWriteStream(path.join(runtimeRoot, 'logs/desktop.log'), { flags: 'a' });
   logStream.on('error', (error) => { status(`无法写入应用日志：${error.message}`); });
   window = new BrowserWindow({ width: 1320, height: 900, minWidth: 900, minHeight: 650, title: TITLE,
+    icon: app.isPackaged ? path.join(process.resourcesPath, 'app-icon.png') : path.join(__dirname, '../assets/app-icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   const browserSession = session.fromPartition('persist:joy-exam-desktop');
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

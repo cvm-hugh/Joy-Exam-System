@@ -118,6 +118,18 @@ def exam_id_crop(path: Path, template: dict[str, Any]) -> np.ndarray | None:
         return None
 
 
+def part_review_crop(path: Path, template: dict[str, Any], section: str) -> np.ndarray | None:
+    """裁切整个 Part 的全部填涂框，用于就近确认空白候选。"""
+    try:
+        root, part, _ = next(group for group in QUESTION_GROUPS if group[2] == section)
+        boxes = [box for options in template[root][part].values() for box in options.values()]
+        if not boxes:
+            return None
+        return _crop(normalize(_read_image(path), template), boxes)
+    except (OSError, KeyError, StopIteration, ValueError, cv2.error):
+        return None
+
+
 def answer_card_preview(path: Path) -> np.ndarray | None:
     """返回原始整张答题卡缩略图；Streamlit 负责按比例缩放展示。"""
     try:
@@ -165,7 +177,7 @@ def prepare_mark_review(
                 blank_candidate = max(read.ratios.values()) < FILL_THRESHOLD
                 unread_candidates.append({"key": f"question:{section}:{number}", "title": f"题号 {number}", "detail": "当前识别结果：空白候选" if blank_candidate else "当前识别结果：无法明确判断", "choices": list(options.keys()), "crop": _crop(image, list(options.values())), "section": section, "number": number, "blank_candidate": blank_candidate})
         if unread_candidates and len(unread_candidates) == len(template[template_root][part]) and section not in expanded_sections:
-            issues.append({"key": f"part_empty:{section}", "kind": "part_empty", "title": PART_LABELS[section], "detail": f"{len(unread_candidates)}/{len(unread_candidates)} 无有效作答（空白候选）", "section": section, "question_issues": unread_candidates, "question_range": f"{unread_candidates[0]['number']}-{unread_candidates[-1]['number']}"})
+            issues.append({"key": f"part_empty:{section}", "kind": "part_empty", "title": PART_LABELS[section], "detail": f"{len(unread_candidates)}/{len(unread_candidates)} 无有效作答（空白候选）", "section": section, "crop": _crop(image, [box for options in template[template_root][part].values() for box in options.values()]), "question_issues": unread_candidates, "question_range": f"{unread_candidates[0]['number']}-{unread_candidates[-1]['number']}"})
         else:
             # 机器的 BLANK 只表示没有检测到足够强的填涂信号，不能等同于
             # 学生确实未作答。非整 Part 的孤立 BLANK 也必须逐题人工确认。

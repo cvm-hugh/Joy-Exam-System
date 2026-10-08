@@ -19,13 +19,14 @@
     "productName": "佳音考试管理",
     "directories": { "output": "../../output/windows", "buildResources": "build" },
     "files": ["main.cjs", "preload.cjs", "shell.html", "shell.cjs", "package.json"],
-    "extraResources": [{ "from": "build/runtime", "to": "runtime", "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc"] }],
+    "extraResources": [{ "from": "build/runtime", "to": "runtime", "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc"] }, { "from": "../assets/app-icon.png", "to": "app-icon.png" }],
     "asar": true,
     "npmRebuild": false,
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "zip", "arch": ["x64"] }],
       "artifactName": "Joy-Exam-System-${version}-Windows-x64.${ext}",
       "requestedExecutionLevel": "asInvoker",
+      "icon": "../assets/app-icon.ico",
       "signAndEditExecutable": true
     },
     "nsis": {

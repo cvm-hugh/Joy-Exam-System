@@ -285,13 +285,16 @@
 
 /* One 390 × 844 report component is shared by preview and PDF export. */
 .parent-preview.report-preview-shell {
-  width: 390px;
+  width: calc(390px * var(--report-preview-scale, 1));
   max-width: none;
   margin: 0 auto 32px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+.report-preview-shell .standard-report-pages {
+  zoom: var(--report-preview-scale, 1);
 }
 .standard-report-pages {
   display: grid;
@@ -591,6 +594,7 @@
 .student-preview-toolbar,
 .student-preview-controls,
 .student-preview-layout,
+.report-preview-scale-control,
 .student-preview-footer {
   display: flex;
   align-items: center;
@@ -604,7 +608,8 @@
 .student-preview-toolbar h2 {
   margin: 0;
 }
-.student-preview-layout {
+.student-preview-layout,
+.report-preview-scale-control {
   gap: 8px;
   min-width: 0;
   margin: 0;
