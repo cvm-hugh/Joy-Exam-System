@@ -5,8 +5,8 @@ import type { Result } from '@/lib/domain';
 import type { ReportPreviewScale } from './report-preview-scale';
 
 const TITLE_FONTS = {
-  rounded: "'Arial Rounded MT Bold', 'Arial Rounded MT', Arial, sans-serif",
-  sans: "Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif",
+  rounded: "'Arial Rounded MT Bold', 'Arial Rounded MT', 'Alibaba Health Font 2.0 CN', 'Alibaba Health Font 2.0 CN 85 B', '阿里健康体2.0 中文', '阿里健康体2.0 中文 85 B', Arial, sans-serif",
+  sans: "Arial, 'MiSans', 'Microsoft YaHei', sans-serif",
   serif: "Georgia, 'Songti SC', SimSun, serif",
 };
 

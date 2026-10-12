@@ -1,0 +1,27 @@
+{
+  "family": "MiSans",
+  "fonts": [
+    {
+      "name": "MiSans-Regular.woff2",
+      "url": "https://hyperos.mi.com/font-download/MiSans.zip",
+      "archiveEntry": "MiSans/woff2/MiSans-Regular.woff2",
+      "bytes": 4858624,
+      "sha256": "d704c1a932c0bd7e8a071d276cd81c0ed0c9fecfa26ac234f4bed0559fe1cb2d",
+      "path": "MiSans-Regular-4.009-d704c1a9.woff2",
+      "version": "4.009",
+      "originalBytes": true
+    },
+    {
+      "name": "MiSans-Semibold.woff2",
+      "url": "https://hyperos.mi.com/font-download/MiSans.zip",
+      "archiveEntry": "MiSans/woff2/MiSans-Semibold.woff2",
+      "bytes": 5034212,
+      "sha256": "78227c6ec59566785c65ac0b5312328bfa2f879918f3d7403725785615a9a8f6",
+      "path": "MiSans-Semibold-4.009-78227c6e.woff2",
+      "version": "4.009",
+      "originalBytes": true
+    }
+  ],
+  "licenseUrl": "https://hyperos.mi.com/font-download/MiSans%E5%AD%97%E4%BD%93%E7%9F%A5%E8%AF%86%E4%BA%A7%E6%9D%83%E8%AE%B8%E5%8F%AF%E5%8D%8F%E8%AE%AE.pdf",
+  "aliHealthFontBundled": false
+}

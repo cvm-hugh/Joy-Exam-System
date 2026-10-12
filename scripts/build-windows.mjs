@@ -65,8 +65,13 @@ const resultDependencies = verifyStandaloneDependencies(join(stage, 'results/dis
 console.log('Packaged result dependencies:', JSON.stringify(resultDependencies));
 writeFileSync(join(stage, 'results/package.json'), JSON.stringify({ type: 'module', version }, null, 2) + '\n');
 writeFileSync(join(stage, 'build-manifest.json'), JSON.stringify({ application: '佳音考试管理', version, architecture: 'x64',
-  target: ['Windows 10', 'Windows 11'], python: metadata.version, electron: desktopMetadata.devDependencies.electron,
-  commit: capture('git', ['rev-parse', 'HEAD']), resultDependencies, scannerLockSha256: sha(join(root, 'services/scanner/requirements-lock.txt')) }, null, 2) + '\n');
+  target: ['Windows 10', 'Windows 11'], windowsVersion: desktopMetadata.build.buildVersion, python: metadata.version, electron: desktopMetadata.devDependencies.electron,
+  commit: capture('git', ['rev-parse', 'HEAD']),
+  incorporatedWindowsInstallerSha256: '6bf12cc0853dcc49bb1cedd750e5d57a6d91eaa6c08ff68bde0d002db6e18cd4',
+  brandIconSha256: sha(join(root, 'desktop/assets/app-icon.png')),
+  windowsIconSha256: sha(join(root, 'desktop/assets/app-icon.ico')),
+  chineseFonts: JSON.parse(readFileSync(join(results, 'public/fonts/sources.json'), 'utf8')),
+  resultDependencies, scannerLockSha256: sha(join(root, 'services/scanner/requirements-lock.txt')) }, null, 2) + '\n');
 npm(['run', 'check'], desktop);
 npm(['run', 'package'], desktop, { CSC_IDENTITY_AUTO_DISCOVERY: 'false' });
 const output = join(root, 'output/windows');

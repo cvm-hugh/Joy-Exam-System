@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import uuid
 import urllib.error
 import urllib.request
 

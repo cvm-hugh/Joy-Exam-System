@@ -2,6 +2,22 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
+/* Original MiSans files and license recovered from the accepted Windows beta.2. */
+@font-face {
+  font-family: 'MiSans';
+  src: url('/fonts/MiSans-Regular-4.009-d704c1a9.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: 'MiSans';
+  src: url('/fonts/MiSans-Semibold-4.009-78227c6e.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
 /* Parent-facing reference theme stays isolated from the staff workspace. */
 .parent-preview {
   --parent-accent: #e60012;
@@ -122,7 +138,7 @@
 .parent-preview .ability-heading,
 .parent-preview .parent-learning-heading {
   white-space: pre-wrap;
-  font-family: 'Arial Rounded MT Bold', 'Arial Rounded MT', Arial, sans-serif;
+  font-family: 'Arial Rounded MT Bold', 'Arial Rounded MT', 'Alibaba Health Font 2.0 CN', 'Alibaba Health Font 2.0 CN 85 B', '阿里健康体2.0 中文', '阿里健康体2.0 中文 85 B', Arial, sans-serif;
   font-size: clamp(38px, 6vw, 48px);
   font-weight: 900;
   letter-spacing: -2px;
@@ -303,7 +319,7 @@
   width: 390px;
   gap: 20px;
   color: #303030;
-  font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: Arial, 'MiSans', 'Microsoft YaHei', sans-serif;
 }
 .standard-report-page {
   position: relative;
@@ -1366,7 +1382,7 @@
   --color-accent-foreground: var(--foreground);
   --radius-lg: 10px;
   --radius-md: 8px;
-  --font-sans: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-sans: Arial, 'MiSans', 'Microsoft YaHei', sans-serif;
 }
 :root {
   --background: #f6f7f5;
@@ -1516,7 +1532,7 @@ body {
   margin: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: Arial, 'MiSans', 'Microsoft YaHei', sans-serif;
   font-size: 14px;
 }
 button,

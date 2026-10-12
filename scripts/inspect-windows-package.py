@@ -75,6 +75,23 @@ with zipfile.ZipFile(root / f'Joy-Exam-System-{version}-Windows-x64.zip') as arc
                  'resources/runtime/results/.local/']
     if any(name.startswith(prefix) for name in names for prefix in forbidden) or 'resources/runtime/results/results.sqlite' in names:
         raise ValueError('Application data found in Windows package')
+    if hashlib.sha256(archive.read('resources/app-icon.png')).hexdigest() != manifest['brandIconSha256']:
+        raise ValueError('Packaged brand icon mismatch')
+    font_root = standalone / 'public/fonts'
+    for font in manifest['chineseFonts']['fonts']:
+        if hashlib.sha256(archive.read(str(font_root / font['path']))).hexdigest() != font['sha256']:
+            raise ValueError('Packaged Chinese font mismatch: ' + font['path'])
+    if str(font_root / 'MiSans-LICENSE.pdf') not in names:
+        raise ValueError('Missing Chinese font license')
+    scanner_ui = archive.read('resources/runtime/scanner/app/scan_ui.py').decode('utf-8')
+    for required in ['import uuid', '0.75 * int(st.session_state.ui_zoom) / 100', 'render_answer_review_item', 'width=200']:
+        if required not in scanner_ui:
+            raise ValueError('Missing scanner update: ' + required)
+    client_scripts = ''.join(archive.read(name).decode('utf-8') for name in sorted(names)
+                             if name.startswith(str(standalone / 'dist/client/') ) and name.endswith('.js'))
+    for required in ['缩放仅影响预览', '报告字体嵌入失败', '报告页面渲染超时']:
+        if required not in client_scripts:
+            raise ValueError('Missing report update: ' + required)
     with archive.open('佳音考试管理.exe') as stream:
         header = stream.read(4096)
     offset = struct.unpack_from('<I', header, 0x3c)[0]
@@ -82,4 +99,5 @@ with zipfile.ZipFile(root / f'Joy-Exam-System-{version}-Windows-x64.zip') as arc
         raise ValueError('Packaged app is not Windows x64')
     print(json.dumps({'checksums': 'matched', 'runtimeDependencies': len(packages),
                       'exceljsRimraf': 'present', 'nestedVersions': 'preserved',
+                      'brandIcon': 'matched', 'chineseFonts': 'matched', 'reviewAndPreviewUpdates': 'present',
                       'userData': 'excluded', 'appArchitecture': 'x64', 'archiveEntries': len(names)}))
