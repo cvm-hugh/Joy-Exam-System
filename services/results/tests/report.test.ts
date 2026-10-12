@@ -121,7 +121,6 @@ test('统一报告组件固定输出九个390 × 844页面', () => {
 test('取得精修班口试资格时使用分组通知文案与独立强调区域', () => {
   const config = defaultConfig();
   config.admission.enabled = true;
-  config.admission.oralInterviewCutoff = null;
   config.admission.dimensionCutoffs = [0, 0, 0, 0, 0, 0];
   const student = validateRows([HEADERS, demoRows()[0]])[0];
   const result = resultFor(student, config, false);

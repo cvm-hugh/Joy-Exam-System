@@ -1,10 +1,11 @@
 'use client';
 
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, type CSSProperties } from 'react';
 import { ChevronDown, ChevronUp, Columns3, Rows3 } from 'lucide-react';
 import type { Result } from '@/lib/domain';
 import { Button } from './ui/button';
 import { ReportPages } from './report-pages';
+import { ReportPreviewScaleControl, type ReportPreviewScale } from './report-preview-scale';
 
 export type StudentPreviewLayout = 'horizontal' | 'vertical';
 
@@ -12,10 +13,14 @@ export function StudentReportPreview({
   result,
   layout,
   onLayoutChange,
+  scale,
+  onScaleChange,
 }: {
   result: Result;
   layout: StudentPreviewLayout;
   onLayoutChange: (layout: StudentPreviewLayout) => void;
+  scale: ReportPreviewScale;
+  onScaleChange: (scale: ReportPreviewScale) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const pagesId = useId();
@@ -64,6 +69,7 @@ export function StudentReportPreview({
               竖向排列
             </Button>
           </fieldset>
+          <ReportPreviewScaleControl scale={scale} onChange={onScaleChange} />
           <Button
             ref={topToggle}
             type="button"
@@ -79,7 +85,7 @@ export function StudentReportPreview({
       </div>
       {expanded ? (
         <p className="mini-label student-preview-hint">
-          {layout === 'horizontal' ? '左右滚动查看完整报告。' : '上下滚动查看完整报告。'}
+          {layout === 'horizontal' ? '左右滚动查看完整报告。' : '上下滚动查看完整报告。'}缩放仅影响预览，导出的报告 PDF 仍按 100% 尺寸导出。
         </p>
       ) : (
         <output className="mini-label student-preview-hint">
@@ -90,8 +96,8 @@ export function StudentReportPreview({
       {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <section id={pagesId} className="student-preview-viewport" hidden={!expanded} aria-label={`${result.name}的报告页面`} tabIndex={expanded ? 0 : -1}>
         {expanded && (
-          <div className="parent-preview report-preview-shell">
-            <ReportPages result={result} />
+          <div className="parent-preview report-preview-shell" style={{ '--report-preview-scale': scale / 100 } as CSSProperties}>
+            <ReportPages result={result} previewScale={scale} />
           </div>
         )}
       </section>

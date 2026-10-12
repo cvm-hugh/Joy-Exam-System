@@ -104,11 +104,16 @@ export function paperFrom(config: Config): PaperTemplate {
     dimensions: config.dimensions,
     paragraphTitles: config.paragraphTitles,
     contentConfirmed: config.contentConfirmed,
-    admission: config.admission,
+    admission: { ...config.admission, enabled: true },
   });
 }
 export function withPaper(config: Config, data: PaperTemplate): Config {
-  return { ...config, ...structuredClone(data), thresholdsConfirmed: true };
+  return {
+    ...config,
+    ...structuredClone(data),
+    admission: { ...structuredClone(data.admission), enabled: true },
+    thresholdsConfirmed: true,
+  };
 }
 export const paperTemplateSchema = z
   .object({

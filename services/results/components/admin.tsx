@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import {
   BookOpen,
   ShieldCheck,
@@ -28,6 +28,7 @@ import { StudentInformationEditor, type InformationStudent } from './student-inf
 import { normalizeYearLevel, studentInformationIssues, type StudentInformationSummary } from '@/lib/student-information';
 import { ReportExport } from './report-export';
 import { ReportPages } from './report-pages';
+import { ReportPreviewScaleControl, type ReportPreviewScale } from './report-preview-scale';
 import { StudentReportPreview, type StudentPreviewLayout } from './student-report-preview';
 import { api, RequestError } from '@/lib/client';
 import { TemplateSelect } from './template-library';
@@ -92,9 +93,14 @@ export function ResultView({
   showPageFlow?: boolean;
   admission?: Config['admission'];
 }) {
+  const [scale, setScale] = useState<ReportPreviewScale>(100);
   return (
-    <div className="parent-preview report-preview-shell">
-      <ReportPages result={result} />
+    <div className="stack">
+      <ReportPreviewScaleControl scale={scale} onChange={setScale} />
+      <p className="mini-label">缩放仅影响预览，导出的报告 PDF 仍按 100% 尺寸导出。</p>
+      <div className="parent-preview report-preview-shell" style={{ '--report-preview-scale': scale / 100 } as CSSProperties}>
+        <ReportPages result={result} previewScale={scale} />
+      </div>
     </div>
   );
 }
@@ -119,7 +125,6 @@ function AdminScreen() {
   const [success, setSuccess] = useState('');
   const [dirty, setDirty] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [isDemo, setIsDemo] = useState(false);
   const [templates, setTemplates] = useState<SavedTemplate[]>([]);
   const [paperTemplateId, setPaperTemplateId] = useState('');
   const [paperRevision, setPaperRevision] = useState<number | null>(null);
@@ -134,6 +139,7 @@ function AdminScreen() {
   const [examNo, setExamNo] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [studentPreviewLayout, setStudentPreviewLayout] = useState<StudentPreviewLayout>('horizontal');
+  const [studentPreviewScale, setStudentPreviewScale] = useState<ReportPreviewScale>(100);
   const [students, setStudents] = useState<
     { examNo: string; name: string; total: string; branch?: string; className?: string; examSession?: string; yearLevel?: string }[]
   >([]);
@@ -444,9 +450,7 @@ function AdminScreen() {
       </div>
       {admissionSummary && (
         <div className="notice" style={{ marginTop: 12 }}>
-          {admissionSummary.enabled
-            ? `精修班口试资格统计：${admissionSummary.interviewCount} / ${admissionSummary.total} 名学生达到当前分数线。`
-            : '资格发布尚未启用；启用并保存当前试卷配置后即可查看精修班口试资格人数。'}
+          {`精修班口试资格统计：${admissionSummary.interviewCount} / ${admissionSummary.total} 名学生达到当前分数线。`}
         </div>
       )}
       {informationStudent && <StudentInformationEditor
@@ -697,12 +701,6 @@ function AdminScreen() {
             </div>
             {tab === 'settings' ? saveButton : null}
           </div>
-          {tab !== 'home' && (
-            <div className="notice">
-              本地基础版 ·
-              测试评价不代表正式结论；上线资料与正式业务内容补齐后再验收。
-            </div>
-          )}
           {error && (
             <div
               className="error"
@@ -817,32 +815,6 @@ function AdminScreen() {
                       学生姓名仅使用中文名；考号请保留开头的0。
                     </span>
                   </label>
-                  <fieldset
-                    className="import-data-kind"
-                    disabled={locked || busy}
-                  >
-                    <legend>数据类型</legend>
-                    <label>
-                      <input
-                        type="radio"
-                        name="import-data-kind"
-                        value="formal"
-                        checked={!isDemo}
-                        onChange={() => setIsDemo(false)}
-                      />
-                      真实数据
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="import-data-kind"
-                        value="demo"
-                        checked={isDemo}
-                        onChange={() => setIsDemo(true)}
-                      />
-                      测试数据
-                    </label>
-                  </fieldset>
                   <Check
                     checked={replaceConfirmed}
                     onChange={setReplaceConfirmed}
@@ -867,7 +839,7 @@ function AdminScreen() {
                         const form = new FormData();
                         form.set('file', file!);
                         form.set('revision', String(snapshot.revision));
-                        form.set('isDemo', String(isDemo));
+                        form.set('isDemo', 'false');
                         if (paperTemplateId) {
                           form.set('paperTemplateId', paperTemplateId);
                           form.set('paperRevision', String(paperRevision));
@@ -961,6 +933,8 @@ function AdminScreen() {
                   result={result}
                   layout={studentPreviewLayout}
                   onLayoutChange={setStudentPreviewLayout}
+                  scale={studentPreviewScale}
+                  onScaleChange={setStudentPreviewScale}
                 />
               )}
               <div style={{ marginTop: 24 }}>{studentTable}</div>
@@ -975,6 +949,30 @@ function AdminScreen() {
               }}
               onDirtyChange={setPaperDirty}
               onBusyChange={setBusy}
+              applyDisabled={locked || dirty || entryDirty || informationDirty}
+              onApply={async (paper) => {
+                if (locked) throw new Error('请先关闭查询，再应用试卷配置。');
+                if (dirty || entryDirty || informationDirty)
+                  throw new Error('请先保存当前页面配置和学生信息，再应用试卷。');
+                if (!(await confirm(
+                  `将“${paper.name}”的已保存版本用于当前考试？资格结果会按这套卷的六维系数线、选填总分线和文案显示，六维评价也使用本套卷配置。当前 ${snapshot.count} 名学生的名单及原始分数保留。`,
+                ))) return false;
+                await api('papers/apply', 'POST', {
+                  revision: snapshot.revision,
+                  paperTemplateId: paper.id,
+                  paperRevision: paper.revision,
+                  confirmApply: true,
+                });
+                await refresh();
+                setResult(null);
+                setImportDefaultInitialized(true);
+                setPaperTemplateId(paper.id);
+                setPaperRevision(paper.revision);
+                setFile(null);
+                setReplaceConfirmed(false);
+                setSuccess('本套卷已用于当前考试，资格结果和六维评价已按本套卷配置更新。');
+                return true;
+              }}
             />
           )}
           {tab === 'settings' && (

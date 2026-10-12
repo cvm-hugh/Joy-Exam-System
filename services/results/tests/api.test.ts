@@ -64,7 +64,7 @@ test('批量长图数据仅管理员可读，保留四项学生信息、匹配�
   assert.equal((await h.call('admin/report-batch', 'POST', { revision: 0, offset: 0 }, false)).status, 401);
   await h.login(); await h.importFixtures(0);
   const state = await h.store.state();
-  state.config.admission = { ...state.config.admission, enabled: true, oralInterviewCutoff: 60 };
+  state.config.admission = { ...state.config.admission, enabled: true, dimensionCutoffs: [0.7, 0.7, 0.7, 0.7, 0.7, 0.7] };
   await h.store.saveConfig(state.config, state.revision);
   const body = { revision: state.revision + 1, offset: 0 };
   assert.equal((await h.call('admin/report-batch', 'POST', body, true, false)).status, 403);
@@ -128,8 +128,7 @@ test('结果发布页仅向管理员返回精修口试过线学生的最小名�
   state.config.admission = {
     ...state.config.admission,
     enabled: true,
-    oralInterviewCutoff: 60,
-    dimensionCutoffs: [0, 0, 0, 0, 0, 0],
+    dimensionCutoffs: [0.7, 0.7, 0.7, 0.7, 0.7, 0.7],
   };
   await h.store.saveConfig(state.config, state.revision);
   const response = await h.call('admin/admission-summary');

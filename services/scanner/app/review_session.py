@@ -32,6 +32,10 @@ class ReviewSession:
         self.persist_current_session()
 
     def initialize(self) -> None:
+        # Rebase an already-open session once; subsequent zoom choices remain intact.
+        if self.state.get("ui_zoom_base") != 75:
+            self.state["ui_zoom"] = 100
+            self.state["ui_zoom_base"] = 75
         defaults = {
             "records": [], "item_rows": [], "issues": {}, "resolved": set(),
             "confirmed_warnings": set(), "audit_log": [], "reviewer": getpass.getuser(),

@@ -9,12 +9,14 @@ import { localExportStamp, planReportExport } from '@/lib/report-export-plan';
 import { useConfirm } from './confirm-action';
 import type { StudentInformationSummary } from '@/lib/student-information';
 
-type DesktopExportHandler = { postMessage: (message: Record<string, unknown>) => void };
+type DesktopExportHandler = { postMessage: (message: Record<string, unknown>) => void | boolean | Promise<boolean> };
 
 function desktopExportHandler(): DesktopExportHandler | undefined {
-  return (window as typeof window & {
+  const desktop = window as typeof window & {
+    joyDesktop?: { exportSession?: DesktopExportHandler };
     webkit?: { messageHandlers?: { exportSession?: DesktopExportHandler } };
-  }).webkit?.messageHandlers?.exportSession;
+  };
+  return desktop.joyDesktop?.exportSession ?? desktop.webkit?.messageHandlers?.exportSession;
 }
 
 function triggerDownload(blob: Blob, fileName: string) {
@@ -109,12 +111,18 @@ export function ReportExport({ count, revision, batchId, examName, sourceFileNam
       const { renderReportPdf, reportPdfFileName } = await import('@/lib/report-pdf');
       let zip = new JSZip(), files = 0, bytes = 0;
       let packageStart = 0, successfulSequence = 0;
-      if (plan.useFolderSession)
-        desktopHandler?.postMessage({
+      if (plan.useFolderSession) {
+        const accepted = await desktopHandler?.postMessage({
           action: 'begin',
           folderName,
           createBatchFolder: plan.createBatchFolder,
         });
+        if (accepted === false) {
+          stopped.current = true;
+          setStatus('已取消保存位置，本轮导出已停止。');
+          return;
+        }
+      }
       async function flush() {
         if (!files) return;
         const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
@@ -157,13 +165,13 @@ export function ReportExport({ count, revision, batchId, examName, sourceFileNam
       } finally {
         await flush();
         if (plan.useFolderSession)
-          setTimeout(() => desktopHandler?.postMessage({ action: 'end' }), 1000);
+          setTimeout(() => { void desktopHandler?.postMessage({ action: 'end' }); }, 1000);
       }
       const outputLabel = plan.kind === 'single-pdf' || plan.kind === 'individual-pdfs' ? 'PDF文件' : '压缩包';
       setStatus(`${stopped.current ? '已停止' : '生成完成'}：${completed}名学生，已发起${downloads}个${outputLabel}下载${problems.length ? `，${problems.length}名失败` : ''}。`);
     } catch (e) {
       setError(e instanceof Error ? e.message : '导出失败');
-      desktopHandler?.postMessage({ action: 'end' });
+      void desktopHandler?.postMessage({ action: 'end' });
       setStatus(completed ? `已生成${completed}名学生，已发起${downloads}个文件下载。` : '');
     } finally {
       setFailures(problems); setRunning(false); onBusyChange(false);

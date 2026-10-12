@@ -1,7 +1,7 @@
-import { env } from 'cloudflare:workers';
-import { handleApi, type ApiEnv } from '@/lib/api';
+import { getApiEnv } from '@joy-runtime-env';
+import { handleApi } from '@/lib/api';
 export const dynamic = 'force-dynamic';
-function handler(request: Request) {
-  return handleApi(request, env as unknown as ApiEnv);
+async function handler(request: Request) {
+  return handleApi(request, await getApiEnv());
 }
 export { handler as GET, handler as POST, handler as PUT };

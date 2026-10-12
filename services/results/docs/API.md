@@ -29,6 +29,7 @@
 | POST /api/admin/templates | `{name, payload:{kind:"analysis"/"evaluation"/"thresholds",data}}`另存模板，不修改考试 |
 | PUT /api/admin/templates | `{id,name,revision}`重命名，拒绝同名/过期版本 |
 | DELETE /api/admin/templates | `{id,revision,confirmDelete:true}`；仅删除指定模板副本，过期或已删除返回409，不删除图片/考试/学生 |
+| POST /api/admin/papers/apply | `{revision,paperTemplateId,paperRevision,confirmApply:true}`；应用已保存套卷到当前考试，保留名单与原始成绩；考试及模板版本须同时匹配 |
 | PUT /api/admin/thresholds | `{revision,data,confirmApply:true}`；只在关闭查询时应用完整阈值模板，保留其他配置与原始成绩 |
 | GET /api/admin/evaluation-template | 24行评价Excel空模板，filled=1导出当前已保存正文 |
 | POST /api/admin/evaluations-preview | multipart：file、revision；返回24套预览、warnings及映射后的data，不写当前配置 |
@@ -50,3 +51,5 @@
 `lib/store.ts`的Database/Statement接口目前由D1绑定提供，测试使用SQLite事务适配。若复用腾讯云数据库，应实现等价的原子批次替换、版本冲突控制和精确查询语义，而非直接把D1接口当成腾讯云SDK。
 
 本地模拟数据保存在项目`.wrangler/`，不是浏览器localStorage。线上备份、审计记录、保留期清理需要根据最终部署方案补充。
+
+资格结果是套卷固定组成部分，默认计算和显示。旧 `admission.enabled=false` 在配置、模板及文件读取时规范为 true；六维系数线及文案保留原值。`admission.oralInterviewCutoff` 为选填总分线，默认 `null`（页面留空，不自动设为 0）；缺少此字段的旧配置或模板也补为 `null`。留空时仅要求六个维度的完整原始系数均达线；填入数值时，还须总分大于等于该值。已填总分线在模板保存、导出、导入及应用时保留；清空后保存为 `null`。家长查询开放状态仍由 `published` 控制。
